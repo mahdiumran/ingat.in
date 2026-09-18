@@ -1,0 +1,117 @@
+# =============================================================================
+# Ingat.in — .gitignore
+# Repo Go (backend) + React/Vite (frontend) + Docker Compose.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Rahasia & lingkungan (JANGAN pernah di-commit)
+# -----------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.env
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials.json
+service-account*.json
+
+# -----------------------------------------------------------------------------
+# Backup & dump database (berisi data produksi)
+# -----------------------------------------------------------------------------
+backups/
+*.sql
+*.sql.gz
+*.sql.gz.sha256
+*.dump
+*.db
+
+# -----------------------------------------------------------------------------
+# Data runtime aplikasi
+# -----------------------------------------------------------------------------
+data/
+*.log
+
+# -----------------------------------------------------------------------------
+# Go — build & test artifacts
+# -----------------------------------------------------------------------------
+# Binary hasil build (nama service di Dockerfile)
+backend/ingatin
+backend/bin/
+backend/tmp/
+# Binary Go secara umum (kecuali direktori)
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+# Coverage
+*.cover
+*.coverprofile
+coverage.out
+coverage.html
+# Vendor (bila tidak ingin di-commit; sesuaikan bila pakai vendoring)
+# vendor/
+
+# -----------------------------------------------------------------------------
+# Node / Vite (frontend)
+# -----------------------------------------------------------------------------
+node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/.vite/
+frontend/node_modules/.vite/
+# Cache & hasil build tooling
+.vite/
+*.tsbuildinfo
+.eslintcache
+.npm/
+.npm-cache/
+
+# -----------------------------------------------------------------------------
+# Docker / Compose (override lokal)
+# -----------------------------------------------------------------------------
+docker-compose.override.yml
+*.local.yml
+
+# -----------------------------------------------------------------------------
+# Codebase memory / indexing artifacts
+# -----------------------------------------------------------------------------
+.codebase-memory/
+*.graph.db.zst
+
+# -----------------------------------------------------------------------------
+# Editor
+# -----------------------------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# -----------------------------------------------------------------------------
+# OS
+# -----------------------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# -----------------------------------------------------------------------------
+# Sementara / scratch
+# -----------------------------------------------------------------------------
+/tmp/
+*.tmp
+*.bak
+*.orig
+*.rej

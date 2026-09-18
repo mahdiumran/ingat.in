@@ -1,0 +1,154 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---------------------------------------------------------------------------
+   Dasar
+   --------------------------------------------------------------------------- */
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-background text-text-primary font-body;
+  }
+
+  /* Fokus terlihat untuk aksesibilitas keyboard. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-primary/60 ring-offset-1 ring-offset-background;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Komponen
+   --------------------------------------------------------------------------- */
+@layer components {
+  /* Kartu m2c: bg-white + border + radius 8px + shadow tipis. */
+  .card {
+    @apply bg-surface-container-lowest border border-border rounded-card shadow-card;
+  }
+
+  .card-pad {
+    @apply p-6;
+  }
+
+  /* Tombol */
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-control
+           text-label-md font-semibold h-9 px-3.5
+           transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-primary {
+    @apply btn bg-primary text-on-primary hover:bg-on-primary-container
+           border border-primary;
+  }
+
+  /* CTA brand m2c (#4ADE80) — dipakai untuk aksi utama di halaman publik. */
+  .btn-brand {
+    @apply btn bg-accent-brand text-text-primary hover:brightness-95
+           border border-[#3ecb72]/40;
+  }
+
+  .btn-secondary {
+    @apply btn bg-surface-container-lowest text-text-secondary border border-border
+           hover:bg-surface-container hover:text-text-primary;
+  }
+
+  .btn-ghost {
+    @apply btn text-text-secondary hover:bg-surface-container hover:text-text-primary;
+  }
+
+  .btn-danger {
+    @apply btn bg-surface-container-lowest text-critical border border-critical/40
+           hover:bg-critical-container;
+  }
+
+  /* Input */
+  .input {
+    @apply h-9 w-full rounded-control border border-border bg-surface-container-lowest
+           px-3 text-body-sm text-text-primary placeholder:text-text-secondary/70
+           focus:border-primary focus:ring-2 focus:ring-primary/20;
+  }
+
+  .label-field {
+    @apply block text-label-md font-semibold text-text-secondary uppercase tracking-wider mb-1.5;
+  }
+
+  /* Badge status (warna + teks, tidak pernah warna saja). */
+  .badge {
+    @apply inline-flex items-center gap-1 rounded-full border px-2 py-0.5
+           text-label-sm font-semibold uppercase tracking-wide;
+  }
+
+  /* Nama tim / kicker */
+  .kicker {
+    @apply text-label-sm font-semibold uppercase tracking-widest text-text-secondary;
+  }
+
+  /* ID / kode / timestamp selalu monospace. */
+  .mono {
+    @apply font-label tabular-nums;
+  }
+
+  /* Navigasi */
+  .nav-item {
+    @apply flex w-full items-center gap-2.5 rounded-control px-3 py-2
+           text-body-sm font-medium text-text-secondary
+           transition-colors duration-150 hover:bg-surface-container hover:text-text-primary;
+  }
+
+  .nav-item-active {
+    @apply bg-primary-container/40 text-on-primary-container font-semibold;
+  }
+
+  /* Tabel */
+  .table {
+    @apply w-full border-collapse text-body-sm;
+  }
+
+  .table thead th {
+    @apply sticky top-0 z-10 border-b border-border bg-surface-container-low
+           px-3 py-2 text-left text-label-sm font-bold uppercase tracking-wider
+           text-text-secondary whitespace-nowrap;
+  }
+
+  .table tbody td {
+    @apply border-b border-border/70 px-3 py-2.5 align-middle;
+  }
+
+  .table tbody tr:hover {
+    @apply bg-surface-container-low/70;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Utilitas kecil
+   --------------------------------------------------------------------------- */
+@layer utilities {
+  .skeleton {
+    @apply animate-pulse rounded bg-surface-container;
+  }
+
+  /* Sembunyikan scrollbar horizontal pada nav mobile tanpa mematikan scroll. */
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
+
+/* Material Symbols — dipakai persis seperti m2c. */
+.material-symbols-outlined {
+  font-variation-settings:
+    'FILL' 0,
+    'wght' 400,
+    'GRAD' 0,
+    'opsz' 24;
+  user-select: none;
+}

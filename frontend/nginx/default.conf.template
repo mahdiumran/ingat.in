@@ -1,0 +1,63 @@
+# Ingat.in — nginx (SPA + proxy API)
+#
+# Catatan: container ini memakai host network agar dapat menjangkau API di
+# 127.0.0.1:8081 (API hanya listen di loopback host). Karena itu port listen
+# ditentukan oleh INGATIN_WEB_PORT dan tidak memakai port 80 (menghindari
+# konflik dengan nginx host serta kebutuhan hak root).
+#
+# Template ini diproses oleh docker-entrypoint nginx: placeholder
+# ${INGATIN_WEB_PORT} digantikan saat container start (lihat
+# /etc/nginx/templates/*.template pada image nginx resmi).
+
+server {
+    listen ${INGATIN_WEB_PORT} default_server;
+    listen [::]:${INGATIN_WEB_PORT} default_server;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Kompresi
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript text/xml application/xml image/svg+xml;
+    gzip_min_length 512;
+
+    # Header keamanan
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "no-referrer" always;
+
+    # Aset statis ber-hash: cache panjang.
+    location /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        try_files $uri =404;
+    }
+
+    # API diteruskan ke backend (loopback host, karena web memakai host network).
+    location /api/ {
+        proxy_pass http://127.0.0.1:8081;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host  $host;
+
+        proxy_connect_timeout 10s;
+        proxy_read_timeout    60s;
+        proxy_send_timeout    60s;
+
+        add_header Cache-Control "no-store" always;
+    }
+
+    # SPA fallback: semua rute diarahkan ke index.html.
+    location / {
+        try_files $uri $uri/ /index.html;
+        add_header Cache-Control "no-cache" always;
+    }
+
+    location = /index.html {
+        add_header Cache-Control "no-store" always;
+    }
+}

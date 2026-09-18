@@ -1,0 +1,182 @@
+# ===========================================================================
+# Ingat.in — satu image, satu file compose.
+#
+# Service:
+#   migrate : run-once, menerapkan migrasi skema lalu keluar
+#   api     : HTTP API (mode api)
+#   worker  : job terjadwal (mode worker)
+#   waha    : WhatsApp gateway (WAHA)
+#   web     : nginx + SPA (satu-satunya service ber-bridge network)
+#
+# NETWORK
+#   PostgreSQL host hanya listen di 127.0.0.1 sehingga container di bridge
+#   network tidak dapat menjangkau 172.17.0.1:5432. Karena itu api/worker/waha
+#   memakai `network_mode: host` dan menghubungi 127.0.0.1:5432 langsung.
+#   Pendekatan ini TIDAK mengubah postgresql.conf/pg_hba.conf host, sehingga
+#   aplikasi lain (juniper_manage, mcnvpn) tetap aman.
+#
+#   Untuk server baru dengan PostgreSQL sebagai container, lihat blok
+#   `postgres` (dinonaktifkan) di bagian bawah file ini dan panduan di
+#   DEPLOYMENT.md §5.2.
+#
+# PORT
+#   8091 web (0.0.0.0) | 8081 api (127.0.0.1) | 8082 waha (127.0.0.1)
+# ===========================================================================
+
+services:
+  # -------------------------------------------------------------------------
+  # Migrasi skema (run-once). api/worker menunggu service ini selesai.
+  # -------------------------------------------------------------------------
+  migrate:
+    build:
+      context: ./backend
+      args:
+        APP_VERSION: ${INGATIN_APP_VERSION:-dev}
+    image: ingatin:local
+    container_name: ingatin-migrate
+    restart: "no"
+    network_mode: host
+    env_file: .env
+    environment:
+      INGATIN_MODE: migrate
+    command: ["-mode=migrate"]
+
+  # -------------------------------------------------------------------------
+  # HTTP API
+  # -------------------------------------------------------------------------
+  api:
+    image: ingatin:local
+    build:
+      context: ./backend
+      args:
+        APP_VERSION: ${INGATIN_APP_VERSION:-dev}
+    container_name: ingatin-api
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    environment:
+      INGATIN_MODE: api
+      INGATIN_ADDR: ${INGATIN_ADDR:-127.0.0.1:8081}
+    command: ["-mode=api"]
+    volumes:
+      - ingatin_data:/app/data
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/app/ingatin", "-version"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # -------------------------------------------------------------------------
+  # Worker (job terjadwal)
+  # -------------------------------------------------------------------------
+  worker:
+    image: ingatin:local
+    build:
+      context: ./backend
+      args:
+        APP_VERSION: ${INGATIN_APP_VERSION:-dev}
+    container_name: ingatin-worker
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    environment:
+      INGATIN_MODE: worker
+    # Flag -mode mengalahkan INGATIN_MODE, jadi keduanya diset agar eksplisit
+    # dan tidak bergantung pada CMD bawaan image.
+    command: ["-mode=worker"]
+    volumes:
+      - ingatin_data:/app/data
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      api:
+        condition: service_started
+
+  # -------------------------------------------------------------------------
+  # WAHA — WhatsApp HTTP API
+  # Hanya listen di 127.0.0.1; dashboard QR diekspos lewat nginx site :8010
+  # (lihat DEPLOYMENT.md §7.2).
+  # -------------------------------------------------------------------------
+  waha:
+    image: devlikeapro/waha:latest
+    container_name: ingatin-waha
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      WAHA_API_KEY: ${WAHA_API_KEY}
+      WHATSAPP_API_HOSTNAME: "127.0.0.1"
+      WHATSAPP_API_PORT: "8082"
+      WAHA_DASHBOARD_ENABLED: "true"
+      WAHA_DASHBOARD_USERNAME: ${WAHA_DASHBOARD_USERNAME:-noc}
+      WAHA_DASHBOARD_PASSWORD: ${WAHA_DASHBOARD_PASSWORD}
+      WHATSAPP_DEFAULT_ENGINE: ${WAHA_ENGINE:-WEBJS}
+      # Hemat memori/disk: jangan simpan media lebih lama dari perlu.
+      WHATSAPP_FILES_LIFETIME: "0"
+      WAHA_PRINT_QR: "false"
+      TZ: ${INGATIN_TIMEZONE:-Asia/Jakarta}
+    volumes:
+      - waha_sessions:/app/.sessions
+
+  # -------------------------------------------------------------------------
+  # Web (nginx + SPA).
+  #
+  # Memakai host network agar dapat meneruskan /api ke 127.0.0.1:8081 —
+  # API sengaja hanya listen di loopback host, dan container di bridge network
+  # memiliki loopback sendiri sehingga tidak dapat menjangkaunya.
+  # Nginx mendengarkan pada port INGATIN_WEB_PORT (default 8091).
+  # -------------------------------------------------------------------------
+  web:
+    build:
+      context: ./frontend
+      args:
+        INGATIN_WEB_PORT: ${INGATIN_WEB_PORT:-8091}
+    image: ingatin-web:local
+    container_name: ingatin-web
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      INGATIN_WEB_PORT: ${INGATIN_WEB_PORT:-8091}
+    depends_on:
+      api:
+        condition: service_started
+
+# ===========================================================================
+# MODE B — PostgreSQL sebagai container (untuk server baru)
+#
+# Hapus komentar pada service `postgres` di bawah, lalu sesuaikan:
+#   - pada service api & worker: hapus `network_mode: host`, tambahkan
+#     `depends_on: {postgres: {condition: service_healthy}}`, dan ubah menjadi
+#     `ports: ["127.0.0.1:8081:8081"]`
+#   - pada service waha: hapus `network_mode: host`, tambahkan
+#     `ports: ["127.0.0.1:8082:3000"]`, dan set WHATSAPP_API_PORT: "3000"
+#   - pada .env: INGATIN_DB_URL=postgres://ingatin:<PASSWORD>@postgres:5432/ingatin?sslmode=disable
+#     dan INGATIN_WAHA_BASE_URL=http://waha:3000
+#   - tambahkan `pgdata` pada bagian volumes di bawah
+#
+#  postgres:
+#    image: postgres:16-alpine
+#    container_name: ingatin-postgres
+#    restart: unless-stopped
+#    environment:
+#      POSTGRES_DB: ${INGATIN_DB_NAME:-ingatin}
+#      POSTGRES_USER: ${INGATIN_DB_USER:-ingatin}
+#      POSTGRES_PASSWORD: ${INGATIN_DB_PASSWORD}
+#    volumes:
+#      - pgdata:/var/lib/postgresql/data
+#    ports:
+#      - "127.0.0.1:5433:5432"
+#    healthcheck:
+#      test: ["CMD-SHELL", "pg_isready -U ${INGATIN_DB_USER:-ingatin} -d ${INGATIN_DB_NAME:-ingatin}"]
+#      interval: 5s
+#      timeout: 5s
+#      retries: 20
+# ===========================================================================
+
+volumes:
+  ingatin_data:
+  waha_sessions:
+  # pgdata:   # aktifkan bersama Mode B
