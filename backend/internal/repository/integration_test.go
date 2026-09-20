@@ -218,17 +218,17 @@ func TestStatusTransitionRecorded(t *testing.T) {
 		}
 		itemID = wi.ID.String()
 
-		// Transisi sah: open -> in_progress
-		res := wf.EvaluateTransitions("open", "in_progress")
+		// Transisi sah: accepted -> on_progress
+		res := wf.EvaluateTransitions("accepted", "on_progress")
 		if !res.Allowed {
 			return errTransition
 		}
-		if err := store.UpdateWorkItemFields(ctx, tx, wi.ID, map[string]any{"status": "in_progress"}); err != nil {
+		if err := store.UpdateWorkItemFields(ctx, tx, wi.ID, map[string]any{"status": "on_progress"}); err != nil {
 			return err
 		}
 		return workitems.AppendEvent(ctx, tx, workitems.EventInput{
 			WorkItemID: itemID, EventType: workitems.EventStatusChanged,
-			Actor: "integration-test", FromValue: "open", ToValue: "in_progress",
+			Actor: "integration-test", FromValue: "accepted", ToValue: "on_progress",
 		})
 	})
 	if err != nil {
@@ -239,13 +239,13 @@ func TestStatusTransitionRecorded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("baca work item: %v", err)
 	}
-	if item.Status != "in_progress" {
-		t.Errorf("status = %q, ingin in_progress", item.Status)
+	if item.Status != "on_progress" {
+		t.Errorf("status = %q, ingin on_progress", item.Status)
 	}
 
 	// Transisi tidak sah harus ditolak oleh workflow.
-	if wf.CanTransition("in_progress", "open") {
-		t.Error("transisi in_progress -> open seharusnya DITOLAK")
+	if wf.CanTransition("on_progress", "accepted") {
+		t.Error("transisi on_progress -> accepted seharusnya DITOLAK")
 	}
 
 	if _, err := store.SoftDeleteWorkItem(ctx, mustUUID(t, itemID)); err != nil {
