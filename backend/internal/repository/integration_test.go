@@ -187,7 +187,7 @@ func TestCreateWorkItemWithEvents(t *testing.T) {
 	}
 
 	// Bersihkan.
-	if err := store.SoftDeleteWorkItem(ctx, mustUUID(t, itemID)); err != nil {
+	if _, err := store.SoftDeleteWorkItem(ctx, mustUUID(t, itemID)); err != nil {
 		t.Fatalf("hapus work item: %v", err)
 	}
 }
@@ -248,7 +248,7 @@ func TestStatusTransitionRecorded(t *testing.T) {
 		t.Error("transisi in_progress -> open seharusnya DITOLAK")
 	}
 
-	if err := store.SoftDeleteWorkItem(ctx, mustUUID(t, itemID)); err != nil {
+	if _, err := store.SoftDeleteWorkItem(ctx, mustUUID(t, itemID)); err != nil {
 		t.Fatalf("hapus work item: %v", err)
 	}
 }
@@ -316,7 +316,7 @@ func TestTagsJSONBRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buat work item bertags: %v", err)
 	}
-	t.Cleanup(func() { _ = store.SoftDeleteWorkItem(ctx, mustUUID(t, itemID)) })
+	t.Cleanup(func() { _, _ = store.SoftDeleteWorkItem(ctx, mustUUID(t, itemID)) })
 
 	got, err := store.GetWorkItem(ctx, mustUUID(t, itemID))
 	if err != nil {
@@ -520,7 +520,7 @@ func TestExtensionWritePath(t *testing.T) {
 			if err != nil {
 				t.Fatalf("transaksi: %v", err)
 			}
-			t.Cleanup(func() { _ = store.SoftDeleteWorkItem(ctx, mustUUID(t, itemID)) })
+			t.Cleanup(func() { _, _ = store.SoftDeleteWorkItem(ctx, mustUUID(t, itemID)) })
 
 			wi, err := store.GetWorkItem(ctx, mustUUID(t, itemID))
 			if err != nil {
