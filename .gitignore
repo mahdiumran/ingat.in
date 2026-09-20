@@ -115,3 +115,5 @@ $RECYCLE.BIN/
 *.bak
 *.orig
 *.rej
+
+.worktrees/
