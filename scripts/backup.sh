@@ -9,7 +9,7 @@
 #   KEEP_DAYS   retensi backup dalam hari (default: INGATIN_BACKUP_KEEP_DAYS atau 14)
 #
 # Pemasangan cron harian 02:00 WIB:
-#   0 2 * * * cd /root/opencode/remindersys && ./scripts/backup.sh >> /var/log/ingatin-backup.log 2>&1
+#   0 2 * * * cd /path/ke/ingat.in && ./scripts/backup.sh >> /var/log/ingatin-backup.log 2>&1
 
 set -euo pipefail
 

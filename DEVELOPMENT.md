@@ -37,7 +37,7 @@ Build di Docker tidak terpengaruh (`golang:1.25-alpine` di stage builder).
 ### 2.1 Jalankan penuh dengan Docker (paling cepat)
 
 ```bash
-cd /root/opencode/remindersys
+cd /path/ke/ingat.in
 cp .env.example .env      # sesuaikan secret
 ./scripts/provision-db.sh # bila memakai PG host
 docker compose up -d --build

@@ -7,7 +7,7 @@ Panduan operasi harian untuk operator NOC/admin.
 ## 1. Cek Kesehatan Cepat
 
 ```bash
-cd /root/opencode/remindersys
+cd /path/ke/ingat.in
 
 # Semua service
 docker compose ps
@@ -214,7 +214,7 @@ ls -lh backups/                            # daftar backup
 Jadwal host (02:00 WIB):
 
 ```cron
-0 2 * * * cd /root/opencode/remindersys && ./scripts/backup.sh >> /var/log/ingatin-backup.log 2>&1
+0 2 * * * cd /path/ke/ingat.in && ./scripts/backup.sh >> /var/log/ingatin-backup.log 2>&1
 ```
 
 Verifikasi integritas backup:

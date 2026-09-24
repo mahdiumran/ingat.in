@@ -71,7 +71,7 @@ INGATIN_DB_URL=postgres://ingatin:<PASSWORD>@postgres:5432/ingatin?sslmode=disab
 ### 3.1 Backup manual
 
 ```bash
-cd /root/opencode/remindersys
+cd /path/ke/ingat.in
 ./scripts/backup.sh
 ```
 
@@ -111,7 +111,7 @@ KEEP_DAYS=30 BACKUP_DIR=/mnt/backup/ingatin ./scripts/backup.sh
 ### 3.3 Jadwal otomatis (cron host, 02:00 WIB)
 
 ```cron
-0 2 * * * cd /root/opencode/remindersys && ./scripts/backup.sh >> /var/log/ingatin-backup.log 2>&1
+0 2 * * * cd /path/ke/ingat.in && ./scripts/backup.sh >> /var/log/ingatin-backup.log 2>&1
 ```
 
 Isi `INGATIN_BACKUP_KEEP_DAYS` di `.env` untuk mengatur retensi dari cron.
@@ -139,7 +139,7 @@ docker compose exec api sh -c \
 ### 4.1 Prosedur lengkap (produksi)
 
 ```bash
-cd /root/opencode/remindersys
+cd /path/ke/ingat.in
 
 # 1) Hentikan penulis agar tidak ada tulis-sementara saat restore
 docker compose stop api worker

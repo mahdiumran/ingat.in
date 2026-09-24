@@ -15,7 +15,7 @@
 | Nama | **Ingat.in** |
 | Fungsi awal | Hub reminder & notifikasi self-hosted untuk NOC/ISP |
 | Fungsi jangka panjang | **Ticketing internal NOC + SLA** di atas model data yang sama |
-| Repo | `/root/opencode/remindersys` |
+| Repo | `github.com/mahdiumran/ingat.in` (dapat ditempatkan di direktori mana pun) |
 | Bahasa backend | **Go 1.25** (chi + pgx/v5 + goose) |
 | Frontend | React + TypeScript + Vite + **Tailwind CSS** (preset m2c) + nginx |
 | Database | PostgreSQL (reuse host di server ini; varian portabel untuk server baru) |

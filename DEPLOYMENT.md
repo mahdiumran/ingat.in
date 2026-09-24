@@ -42,7 +42,7 @@ ss -ltnp | grep -E ':(8091|8081|8082|8010)\b' || echo "semua port bebas"
 Mode ini dipakai di server ini: PostgreSQL host yang sudah ada dipakai ulang.
 
 ```bash
-cd /root/opencode/remindersys
+cd /path/ke/ingat.in
 ./install.sh
 ```
 
@@ -70,7 +70,7 @@ WAHA      : http://127.0.0.1:8082  (via nginx QR :8010, F3)
 ## 3. Instalasi Manual (Langkah per Langkah)
 
 ```bash
-cd /root/opencode/remindersys
+cd /path/ke/ingat.in
 
 # 1) Siapkan .env
 cp .env.example .env
@@ -495,7 +495,7 @@ retensi default 14 hari (dapat diubah via `KEEP_DAYS`).
 Jadwalkan harian 02:00 WIB di host:
 
 ```cron
-0 2 * * * cd /root/opencode/remindersys && ./scripts/backup.sh >> /var/log/ingatin-backup.log 2>&1
+0 2 * * * cd /path/ke/ingat.in && ./scripts/backup.sh >> /var/log/ingatin-backup.log 2>&1
 ```
 
 ### 10.2 Restore
@@ -524,7 +524,7 @@ memastikan backup benar-benar dapat dipulihkan.
 
 ```bash
 # Upgrade
-cd /root/opencode/remindersys
+cd /path/ke/ingat.in
 ./scripts/backup.sh              # backup dulu (WAJIB)
 git pull                          # atau ganti source
 docker compose build
