@@ -1,4 +1,5 @@
 # Ingat.in
+<img width="2555" height="1208" alt="image" src="https://github.com/user-attachments/assets/41c721b4-a509-436a-a164-be93bc09fd05" />
 
 Hub **reminder & notifikasi self-hosted** untuk NOC/ISP, dirancang untuk berkembang
 menjadi **platform ticketing internal NOC + SLA**.
