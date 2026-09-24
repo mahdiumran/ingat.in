@@ -94,6 +94,8 @@ const (
 	EventCancelled       = "cancelled"
 	EventNotified        = "notified"
 	EventNotifyFailed    = "notify_failed"
+	// EventUnlocked = admin memaksa membuka tiket yang sudah ditutup (F20).
+	EventUnlocked = "unlocked"
 )
 
 // validEventTypes adalah whitelist agar nilai tidak menyalahi CHECK constraint.
@@ -105,6 +107,7 @@ var validEventTypes = map[string]bool{
 	EventSLAWarning: true, EventSLABreached: true, EventSLAPaused: true,
 	EventSLAResumed: true, EventResolved: true, EventClosed: true,
 	EventCancelled: true, EventNotified: true, EventNotifyFailed: true,
+	EventUnlocked: true,
 }
 
 // EventInput adalah data satu event yang akan dicatat.
@@ -207,14 +210,15 @@ func DefaultWorkflows() map[string]*Workflow {
 		"task": {
 			ItemType:     "task",
 			Name:         "Alur Task Standar",
-			States:       []string{"accepted", "on_progress", "expired", "canceled", "closed"},
+			States:       []string{"accepted", "on_progress", "waiting_customer", "expired", "canceled", "closed"},
 			InitialState: "accepted",
 			Transitions: map[string][]string{
-				"accepted":    {"on_progress", "expired", "canceled", "closed"},
-				"on_progress": {"expired", "canceled", "closed"},
-				"expired":     {"accepted", "canceled", "closed"},
-				"canceled":    {"accepted"},
-				"closed":      {"accepted"},
+				"accepted":         {"on_progress", "waiting_customer", "expired", "canceled", "closed"},
+				"on_progress":      {"waiting_customer", "expired", "canceled", "closed"},
+				"waiting_customer": {"on_progress", "expired", "canceled", "closed"},
+				"expired":          {"accepted", "canceled", "closed"},
+				"canceled":         {"accepted"},
+				"closed":           {"accepted"},
 			},
 			TerminalStates: []string{"closed", "canceled"},
 		},
@@ -235,15 +239,16 @@ func DefaultWorkflows() map[string]*Workflow {
 		"rfs": {
 			ItemType:     "rfs",
 			Name:         "Alur RFS Standar",
-			States:       []string{"planned", "in_progress", "in_progress_field", "activated", "postponed", "cancelled"},
+			States:       []string{"planned", "in_progress", "in_progress_field", "pending_troubleshoot", "activated", "postponed", "cancelled"},
 			InitialState: "planned",
 			Transitions: map[string][]string{
-				"planned":           {"in_progress", "postponed", "cancelled"},
-				"in_progress":       {"in_progress_field", "activated", "postponed", "cancelled"},
-				"in_progress_field": {"activated", "postponed", "cancelled"},
-				"activated":         {},
-				"postponed":         {"planned", "in_progress", "cancelled"},
-				"cancelled":         {},
+				"planned":              {"in_progress", "postponed", "cancelled"},
+				"in_progress":          {"in_progress_field", "pending_troubleshoot", "activated", "postponed", "cancelled"},
+				"in_progress_field":    {"pending_troubleshoot", "activated", "postponed", "cancelled"},
+				"pending_troubleshoot": {"in_progress", "in_progress_field", "activated", "postponed", "cancelled"},
+				"activated":            {},
+				"postponed":            {"planned", "in_progress", "cancelled"},
+				"cancelled":            {},
 			},
 			TerminalStates: []string{"activated", "cancelled"},
 		},
@@ -297,13 +302,14 @@ func DefaultWorkflows() map[string]*Workflow {
 		"daily_task": {
 			ItemType:     "daily_task",
 			Name:         "Alur Daily Task",
-			States:       []string{"pending", "in_progress", "done", "canceled"},
+			States:       []string{"pending", "in_progress", "waiting_customer", "done", "canceled"},
 			InitialState: "pending",
 			Transitions: map[string][]string{
-				"pending":     {"in_progress", "done", "canceled"},
-				"in_progress": {"done", "pending", "canceled"},
-				"done":        {"pending"},
-				"canceled":    {"pending"},
+				"pending":          {"in_progress", "done", "canceled"},
+				"in_progress":      {"waiting_customer", "done", "pending", "canceled"},
+				"waiting_customer": {"in_progress", "done", "canceled"},
+				"done":             {"pending"},
+				"canceled":         {"pending"},
 			},
 			TerminalStates: []string{"done", "canceled"},
 		},

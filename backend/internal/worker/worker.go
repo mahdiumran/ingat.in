@@ -17,13 +17,19 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/robfig/cron/v3"
 
+	"ingatin/backend/internal/backup"
 	"ingatin/backend/internal/config"
+	"ingatin/backend/internal/models"
 	"ingatin/backend/internal/notify"
 	"ingatin/backend/internal/repository"
+	"ingatin/backend/internal/sheets"
+	"ingatin/backend/internal/sla"
 )
 
 // Worker memiliki seluruh job background.
@@ -32,11 +38,12 @@ type Worker struct {
 	store  *repository.Store
 	outbox *notify.Outbox
 	fanout *notify.Fanout
+	sheets *sheets.Queue
 	cron   *cron.Cron
 }
 
 // New membuat Worker baru.
-func New(cfg *config.Config, store *repository.Store, outbox *notify.Outbox, fanout *notify.Fanout) *Worker {
+func New(cfg *config.Config, store *repository.Store, outbox *notify.Outbox, fanout *notify.Fanout, sheetQueue *sheets.Queue) *Worker {
 	loc, err := time.LoadLocation(cfg.Timezone)
 	if err != nil {
 		log.Printf("worker: timezone %q tidak dikenal, memakai UTC", cfg.Timezone)
@@ -47,6 +54,7 @@ func New(cfg *config.Config, store *repository.Store, outbox *notify.Outbox, fan
 		store:  store,
 		outbox: outbox,
 		fanout: fanout,
+		sheets: sheetQueue,
 		cron:   cron.New(cron.WithLocation(loc)),
 	}
 }
@@ -75,12 +83,34 @@ func (w *Worker) Start() {
 		log.Printf("worker: jadwal digest: %v", err)
 	}
 
+	// F22: ringkasan tugas harian (pending/in_progress/done). Interval tetap
+	// setiap menit; pengiriman sebenarnya mengikuti setting summary_mode &
+	// summary_interval_min sehingga dapat diubah operator tanpa deploy ulang.
+	if _, err := w.cron.AddFunc("* * * * *", w.runDailySummaryTick); err != nil {
+		log.Printf("worker: jadwal ringkasan tugas: %v", err)
+	}
+
 	if _, err := w.cron.AddFunc("* * * * *", w.runSLATick); err != nil {
 		log.Printf("worker: jadwal sla: %v", err)
 	}
 
 	if _, err := w.cron.AddFunc("0 3 * * *", w.runRetention); err != nil {
 		log.Printf("worker: jadwal retensi: %v", err)
+	}
+
+	// F18: sinkronisasi spreadsheet + pemulihan entri menggantung.
+	sheetEvery := fmt.Sprintf("@every %ds", maxInt(30, w.cfg.SheetSyncInterval))
+	if _, err := w.cron.AddFunc(sheetEvery, w.runSheetSync); err != nil {
+		log.Printf("worker: jadwal sheet sync: %v", err)
+	}
+	if _, err := w.cron.AddFunc("@every 5m", w.runSheetRecovery); err != nil {
+		log.Printf("worker: jadwal pemulihan sheet sync: %v", err)
+	}
+
+	// F34: cadangan otomatis. Pemeriksaan tiap menit; eksekusi mengikuti jadwal
+	// cron yang disimpan pada settings (dapat diubah operator tanpa deploy).
+	if _, err := w.cron.AddFunc("* * * * *", w.runBackupTick); err != nil {
+		log.Printf("worker: jadwal cadangan: %v", err)
 	}
 
 	w.cron.Start()
@@ -213,15 +243,200 @@ func (w *Worker) runDigest() {
 	})
 }
 
-// runSLATick adalah kerangka mesin SLA (diaktifkan pada F11).
+// runDailySummaryTick mengirim ringkasan tugas harian sesuai jadwal setting.
+//
+// Mode 'off' menonaktifkan; 'on_change' hanya dikirim saat status berubah (dari
+// API); 'interval' mengirim tiap N menit. Kunci outbox memakai tanggal + jam
+// agar tidak dobel dalam satu slot.
+func (w *Worker) runDailySummaryTick() {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	w.withHealth(ctx, "daily_summary", func() error {
+		cfg, err := w.store.GetSetting(ctx, "daily_task.summary_mode")
+		if err != nil {
+			return nil // setting belum ada → nonaktif
+		}
+		mode, _ := cfg["value"].(string)
+		mode = strings.TrimSpace(strings.ToLower(mode))
+		if mode != "interval" {
+			return nil
+		}
+
+		interval := 60
+		if v, err := w.store.GetSetting(ctx, "daily_task.summary_interval_min"); err == nil {
+			switch n := v["value"].(type) {
+			case float64:
+				interval = int(n)
+			case string:
+				if p, e := strconv.Atoi(strings.TrimSpace(n)); e == nil {
+					interval = p
+				}
+			}
+		}
+		if interval < 5 {
+			interval = 5
+		}
+
+		now := time.Now().UTC()
+		// Kirim hanya pada kelipatan interval (menit) agar hemat.
+		if now.Minute()%interval != 0 {
+			return nil
+		}
+
+		if _, err := w.sendDailyTaskSummary(ctx, now); err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
+// sendDailyTaskSummary membangun & mengantrikan ringkasan tugas harian untuk
+// hari berjalan (WIB). Kunci unik per tanggal+jam-slot.
+func (w *Worker) sendDailyTaskSummary(ctx context.Context, now time.Time) (int, error) {
+	targetID, err := w.store.DefaultTargetID(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("target default tidak ditemukan: %w", err)
+	}
+
+	loc, err := time.LoadLocation(w.cfg.Timezone)
+	if err != nil {
+		loc = time.UTC
+	}
+	local := now.In(loc)
+	dayStart := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)
+	dayEnd := dayStart.AddDate(0, 0, 1)
+
+	sum, err := w.store.ListDailyTaskSummary(ctx, dayStart.UTC(), dayEnd.UTC())
+	if err != nil {
+		return 0, err
+	}
+
+	group := notify.SummaryGroup{
+		Pending:    toSummaryTasks(sum.Pending),
+		InProgress: toSummaryTasks(sum.InProgress),
+		Done:       toSummaryTasks(sum.Done),
+	}
+	dayLabel := local.Format("02 Jan 2006 15:04")
+	desc, notes := notify.BuildDailySummary(dayLabel, group)
+
+	payload := notify.Payload{
+		Title:       "Ringkasan Tugas Harian",
+		CreatedAt:   notify.FormatWIB(&now),
+		Description: desc,
+		Notes:       notes,
+	}
+
+	// Kunci unik per tanggal+slot jam agar tidak dobel pada slot yang sama.
+	slotKey := local.Format("2006-01-02-15")
+	res, err := w.outbox.Enqueue(ctx, notify.EnqueueParams{
+		EventKey:    "daily_summary:" + slotKey,
+		SourceType:  "system",
+		TemplateKey: notify.TemplateDailySummary,
+		Severity:    "info",
+		TargetID:    *targetID,
+		Payload:     payload,
+	})
+	if err != nil {
+		return 0, err
+	}
+	if res.Added > 0 {
+		log.Printf("worker[daily_summary]: ringkasan %s diantrikan", slotKey)
+	}
+	return res.Added, nil
+}
+
+func toSummaryTasks(in []repository.DailyTaskSummaryItem) []notify.SummaryTask {
+	out := make([]notify.SummaryTask, 0, len(in))
+	for _, it := range in {
+		out = append(out, notify.SummaryTask{
+			RefNo:   it.RefNo,
+			Title:   it.Title,
+			Owner:   it.Owner,
+			DueAt:   notify.FormatWIB(it.DueAt),
+			Overdue: it.Overdue,
+		})
+	}
+	return out
+}
+
+// runSLATick mengevaluasi SLA tiket yang sedang berjalan (F20).
+//
+// Setiap siklus aktif dihitung terpisah: respons pertama dan penyelesaian
+// terhadap target policy (per prioritas). Hasilnya memperbarui sla_state
+// work item; bila melewati target, notifikasi SLA_BREACH diantrikan (sekali).
 func (w *Worker) runSLATick() {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	w.withHealth(ctx, "sla_tick", func() error {
-		// F11: evaluasi seluruh work item ber-sla_policy terhadap sla_targets,
-		// perbarui sla_state, lalu tembak SLA_WARNING/SLA_BREACH ke outbox.
+		rows, err := w.store.ListOpenSLACycles(ctx)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC()
+		breached := 0
+
+		for _, r := range rows {
+			targets := sla.Targets{
+				FirstResponseMinutes: r.TargetResponse,
+				ResolutionMinutes:    r.TargetResolution,
+			}
+			if targets.FirstResponseMinutes == 0 || targets.ResolutionMinutes == 0 {
+				targets = sla.TargetsForPriority(r.Priority)
+			}
+
+			st := sla.Evaluate(r.OpenedAt, r.FirstResponseAt, nil, targets, now)
+			state := models.SLAStateOnTrack
+			var breachedAt *time.Time
+			if st.Breached {
+				state = models.SLAStateBreached
+				breachedAt = &now
+			}
+
+			if err := w.store.SetWorkItemSLAState(ctx, r.WorkItemID, state, breachedAt); err != nil {
+				log.Printf("worker[sla_tick]: gagal set state %s: %v", r.RefNo, err)
+				continue
+			}
+			if !st.Breached {
+				continue
+			}
+			breached++
+			w.notifySLABreach(ctx, r, targets, now)
+		}
+		if len(rows) > 0 {
+			log.Printf("worker[sla_tick]: dievaluasi=%d breached=%d", len(rows), breached)
+		}
 		return nil
+	})
+}
+
+// notifySLABreach mengantrikan notifikasi pelanggaran SLA sekali per siklus.
+func (w *Worker) notifySLABreach(ctx context.Context, r repository.OpenSLACycleRow, t sla.Targets, now time.Time) {
+	targetID, err := w.store.DefaultTargetID(ctx)
+	if err != nil {
+		return
+	}
+	targetWindow := time.Duration(t.ResolutionMinutes) * time.Minute
+	payload := notify.Payload{
+		RefNo:       r.RefNo,
+		Title:       r.Title,
+		ItemType:    r.ItemType,
+		Priority:    r.Priority,
+		Owner:       r.OwnerUsername,
+		CreatedAt:   notify.FormatWIB(&now),
+		Remaining:   notify.HumanRemaining(r.OpenedAt.Add(targetWindow), now),
+		SubjectName: r.Title,
+		Category:    "SLA",
+	}
+	_, _ = w.outbox.Enqueue(ctx, notify.EnqueueParams{
+		EventKey:    fmt.Sprintf("sla_breach:%s:%d", r.WorkItemID, r.CycleNo),
+		WorkItemID:  &r.WorkItemID,
+		SourceType:  "system",
+		TemplateKey: notify.TemplateSLABreach,
+		Severity:    models.SeverityCritical,
+		TargetID:    *targetID,
+		Payload:     payload,
 	})
 }
 
@@ -259,11 +474,125 @@ func (w *Worker) runRetention() {
 	})
 }
 
+// runSheetSync menulis antrean sinkronisasi spreadsheet (F18).
+func (w *Worker) runSheetSync() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	w.withHealth(ctx, "sheet_sync", func() error {
+		res, err := w.sheets.Dispatch(ctx)
+		if err != nil {
+			return err
+		}
+		sheets.LogSummary(res)
+		return nil
+	})
+}
+
+// runSheetRecovery mengembalikan entri 'sending' yang menggantung ke pending.
+func (w *Worker) runSheetRecovery() {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	w.withHealth(ctx, "sheet_sync_recovery", func() error {
+		n, err := w.sheets.RecoverStuck(ctx, 10*time.Minute)
+		if err != nil {
+			return err
+		}
+		if n > 0 {
+			log.Printf("worker[sheet_sync_recovery]: %d entri dikembalikan ke pending", n)
+		}
+		return nil
+	})
+}
+
+// runBackupTick menjalankan cadangan otomatis (F34) sesuai jadwal yang
+// disimpan pada settings. Dipanggil tiap menit; keputusan "sekarang" dihitung
+// dengan mencocokkan waktu lokal dengan ekspresi cron berikut jadwal terakhir.
+func (w *Worker) runBackupTick() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+
+	w.withHealth(ctx, "backup", func() error {
+		cfg, err := backup.LoadConfig(ctx, w.store)
+		if err != nil {
+			return err
+		}
+		if !cfg.Enabled {
+			return nil
+		}
+
+		schedule, err := cron.ParseStandard(cfg.Schedule)
+		if err != nil {
+			return fmt.Errorf("jadwal cadangan tidak valid %q: %w", cfg.Schedule, err)
+		}
+
+		now := time.Now().In(w.cron.Location())
+		// Jadwal berikut setelah jadwal terakhir; bila sudah lewat "now", jalankan.
+		var base time.Time
+		if cfg.LastRunAt != nil {
+			if t, perr := time.Parse(time.RFC3339, *cfg.LastRunAt); perr == nil {
+				base = t.In(w.cron.Location())
+			}
+		}
+		if base.IsZero() {
+			// Belum pernah berjalan: jalankan bila slot jadwal hari ini sudah lewat.
+			base = now.Add(-24 * time.Hour)
+		}
+		next := schedule.Next(base)
+		if next.After(now) {
+			return nil
+		}
+
+		dir := w.cfg.BackupDir
+		if dir == "" {
+			dir = "/app/data/backups"
+		}
+
+		info, err := backup.Create(ctx, backup.DumpOptions{
+			DBURL: w.cfg.DBURL,
+			Dir:   dir,
+			Label: "auto",
+		})
+		if err != nil {
+			_ = backup.TouchRun(context.Background(), w.store, "error", err.Error(), "", now.UTC().Format(time.RFC3339), "worker")
+			return err
+		}
+
+		// Pemangkasan retensi lokal.
+		if removed, perr := backup.Prune(dir, cfg.KeepDays); perr != nil {
+			log.Printf("worker[backup]: pangkas gagal: %v", perr)
+		} else if removed > 0 {
+			log.Printf("worker[backup]: %d berkas lama dihapus", removed)
+		}
+
+		// Unggah ke FTP bila diaktifkan.
+		if cfg.FTP.Enabled && strings.TrimSpace(cfg.FTP.Host) != "" {
+			ftpCfg, ferr := cfg.FTPConfig(w.store, w.cfg.CredentialKey)
+			if ferr != nil {
+				_ = backup.TouchRun(context.Background(), w.store, "error", ferr.Error(), info.Name, now.UTC().Format(time.RFC3339), "worker")
+				return ferr
+			}
+			full, perr := backup.Path(dir, info.Name)
+			if perr != nil {
+				return perr
+			}
+			if uerr := backup.UploadFile(ftpCfg, full, info.Name); uerr != nil {
+				_ = backup.TouchRun(context.Background(), w.store, "error", uerr.Error(), info.Name, now.UTC().Format(time.RFC3339), "worker")
+				return uerr
+			}
+			log.Printf("worker[backup]: %s dibuat & diunggah ke FTP", info.Name)
+			return backup.TouchRun(context.Background(), w.store, "ok", "", info.Name, now.UTC().Format(time.RFC3339), "worker")
+		}
+
+		log.Printf("worker[backup]: %s dibuat (lokal)", info.Name)
+		return backup.TouchRun(context.Background(), w.store, "ok", "", info.Name, now.UTC().Format(time.RFC3339), "worker")
+	})
+}
+
 /* ---------------------------------------------------------------------------
    Pembungkus
    --------------------------------------------------------------------------- */
-
-// withHealth membungkus job agar error/panic tercatat tanpa menghentikan scheduler.
 func (w *Worker) withHealth(ctx context.Context, name string, fn func() error) {
 	defer func() {
 		if rec := recover(); rec != nil {

@@ -107,7 +107,7 @@ func TestFallbackTemplatesRenderWithoutError(t *testing.T) {
 	keys := []string{
 		TemplateTodoCreated, TemplateReminderOffset, TemplateReminderDueToday,
 		TemplateReminderLate, TemplateRFSUpcoming, TemplateRFSToday,
-		TemplateRFSLate, TemplateTestMessage, TemplateSLAWarning, "UNKNOWN_KEY",
+		TemplateRFSLate, TemplateRFSCreated, TemplateTestMessage, TemplateSLAWarning, "UNKNOWN_KEY",
 	}
 	payload := Payload{
 		RefNo: "RFS-2026-0001", Title: "Uji", Priority: "high",
@@ -445,7 +445,7 @@ func TestFallbackTemplatePlaceholdersMatchPayload(t *testing.T) {
 	keys := []string{
 		TemplateTodoCreated, TemplateReminderOffset, TemplateReminderDueToday,
 		TemplateReminderLate, TemplateRFSUpcoming, TemplateRFSToday,
-		TemplateRFSLate, TemplateTestMessage, TemplateSLAWarning, TemplateSLABreach,
+		TemplateRFSLate, TemplateRFSCreated, TemplateTestMessage, TemplateSLAWarning, TemplateSLABreach,
 	}
 
 	for _, key := range keys {
@@ -508,6 +508,7 @@ func TestAllSeedTemplateKeysHaveRenderingPayload(t *testing.T) {
 		TemplateTodoCreated, TemplateDailyTaskCreated, TemplateReminderOffset,
 		TemplateReminderDueToday, TemplateReminderLate, TemplateRFSUpcoming,
 		TemplateRFSToday, TemplateRFSLate, TemplateTestMessage,
+		TemplateTicketFromDaily,
 	}
 	full := Payload{
 		RefNo: "REM-2026-0001", Title: "T", ItemType: "reminder",

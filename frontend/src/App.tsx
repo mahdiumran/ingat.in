@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { api, ApiUser, clearSession, getStoredUser, isAuthenticated, setUnauthorizedHandler, workItemsApi } from './api'
 import { Toast, ToastStack } from './components/ui'
 import { NotificationBell } from './components/NotificationBell'
+import { ThemeToggle } from './components/ThemeToggle'
 import Audit from './pages/Audit'
 import Dashboard from './pages/Dashboard'
 import DailyTasks from './pages/DailyTasks'
@@ -10,6 +11,9 @@ import MasterData from './pages/MasterData'
 import MasterDataKindPage from './pages/MasterDataKindPage'
 import NotificationTemplatesPage from './pages/NotificationTemplatesPage'
 import RolePermissionsPage from './pages/RolePermissionsPage'
+import SheetSync from './pages/SheetSync'
+import Backup from './pages/Backup'
+import Kpi from './pages/Kpi'
 
 import Profile from './pages/Profile'
 import Targets from './pages/Targets'
@@ -17,6 +21,7 @@ import Providers from './pages/Providers'
 import Policies from './pages/Policies'
 import Reminders from './pages/Reminders'
 import Rfs from './pages/Rfs'
+import Notes from './pages/Notes'
 import Tickets from './pages/Tickets'
 import Todos from './pages/Todos'
 import Users from './pages/Users'
@@ -28,6 +33,7 @@ export type View =
   | 'tickets'
   | 'reminders'
   | 'rfs'
+  | 'notes'
   | 'targets'
   | 'providers'
   | 'policies'
@@ -35,11 +41,14 @@ export type View =
   | 'masterdata-kind'
   | 'masterdata-roles'
   | 'masterdata-templates'
+  | 'kpi'
+  | 'sheetsync'
+  | 'backup'
   | 'audit'
   | 'users'
   | 'profile'
 
-type NavItem = { id: View; label: string; icon: string; group: string; adminOnly?: boolean }
+type NavItem = { id: View; label: string; icon: string; group: string; adminOnly?: boolean; permission?: string }
 
 /**
  * Navigasi sesuai PLAN.md §8.
@@ -51,11 +60,15 @@ const NAV: NavItem[] = [
   { id: 'todos', label: 'Todo Tasks', icon: 'task_alt', group: 'OPERASIONAL' },
   { id: 'tickets', label: 'Ticketing', icon: 'confirmation_number', group: 'OPERASIONAL' },
   { id: 'reminders', label: 'Reminder', icon: 'alarm', group: 'OPERASIONAL' },
-  { id: 'rfs', label: 'RFS', icon: 'event_available', group: 'OPERASIONAL' },
-  { id: 'targets', label: 'Notification Targets', icon: 'group', group: 'NOTIFIKASI' },
-  { id: 'providers', label: 'Providers', icon: 'hub', group: 'NOTIFIKASI' },
+  { id: 'rfs', label: 'Aktivasi / EWO', icon: 'event_available', group: 'OPERASIONAL' },
+  { id: 'notes', label: 'Catatan', icon: 'sticky_note_2', group: 'OPERASIONAL', permission: 'notes.view' },
+  { id: 'kpi', label: 'KPI & SLA', icon: 'monitoring', group: 'OPERASIONAL' },
+  { id: 'targets', label: 'Notification Targets', icon: 'group', group: 'NOTIFIKASI', permission: 'providers.view' },
+  { id: 'providers', label: 'Providers', icon: 'hub', group: 'NOTIFIKASI', permission: 'providers.view' },
   { id: 'policies', label: 'Escalation Policies', icon: 'stairs', group: 'NOTIFIKASI' },
   { id: 'masterdata', label: 'Master Data', icon: 'database', group: 'MANAJEMEN' },
+  { id: 'sheetsync', label: 'Google Sheets', icon: 'table_chart', group: 'MANAJEMEN', adminOnly: true },
+  { id: 'backup', label: 'Backup & Restore', icon: 'cloud_sync', group: 'MANAJEMEN', adminOnly: true },
   { id: 'audit', label: 'Audit Trail', icon: 'history', group: 'MANAJEMEN', adminOnly: true },
   { id: 'users', label: 'Users & Teams', icon: 'manage_accounts', group: 'MANAJEMEN', adminOnly: true },
   { id: 'profile', label: 'Profil Saya', icon: 'account_circle', group: 'MANAJEMEN' },
@@ -242,7 +255,13 @@ export default function App() {
   }
 
   const isAdmin = user?.role === 'admin'
-  const visibleNav = NAV.filter((n) => !n.adminOnly || isAdmin)
+  // F22: izin efektif dari /auth/me (super user mendapat semua).
+  const can = (perm: string) => !!user && (user.is_super || (user.permissions ?? []).includes(perm))
+  const visibleNav = NAV.filter((n) => {
+    if (n.id === 'kpi') return can('kpi.view')
+    if (n.permission) return can(n.permission)
+    return !n.adminOnly || isAdmin
+  })
   const collapsed = sidebarCollapsed || isNarrow
   const activeLabel =
     visibleNav.find((n) => n.id === view)?.label ??
@@ -252,7 +271,7 @@ export default function App() {
     <div className="min-h-screen bg-background">
       <div className="flex">
         <aside
-          className={`hidden shrink-0 border-r border-border bg-surface-container-lowest min-[821px]:block ${
+          className={`sticky top-0 hidden h-screen shrink-0 overflow-hidden border-r border-border bg-surface-container-lowest min-[821px]:block ${
             collapsed ? 'w-[72px]' : 'w-[232px]'
           } transition-[width] duration-150`}
         >
@@ -293,8 +312,9 @@ export default function App() {
             {view === 'tickets' && <Tickets user={user} toast={pushToast} focusItemId={focusItem?.view === 'tickets' ? focusItem.id : null} onFocusConsumed={() => setFocusItem(null)} />}
             {view === 'reminders' && <Reminders user={user} toast={pushToast} focusItemId={focusItem?.view === 'reminders' ? focusItem.id : null} onFocusConsumed={() => setFocusItem(null)} />}
             {view === 'rfs' && <Rfs user={user} toast={pushToast} focusItemId={focusItem?.view === 'rfs' ? focusItem.id : null} onFocusConsumed={() => setFocusItem(null)} />}
-            {view === 'targets' && <Targets user={user} toast={pushToast} />}
-            {view === 'providers' && <Providers user={user} toast={pushToast} />}
+            {view === 'notes' && <Notes user={user} toast={pushToast} />}
+            {view === 'targets' && can('providers.view') && <Targets user={user} toast={pushToast} />}
+            {view === 'providers' && can('providers.view') && <Providers user={user} toast={pushToast} />}
             {view === 'policies' && <Policies user={user} toast={pushToast} />}
             {view === 'masterdata' && (
               <MasterData
@@ -318,9 +338,12 @@ export default function App() {
             {view === 'masterdata-roles' && isAdmin && (
               <RolePermissionsPage user={user} toast={pushToast} onBack={() => navigate('masterdata')} />
             )}
-            {view === 'masterdata-templates' && isAdmin && (
+            {view === 'masterdata-templates' && can('providers.view') && (
               <NotificationTemplatesPage user={user} toast={pushToast} onBack={() => navigate('masterdata')} />
             )}
+            {view === 'kpi' && can('kpi.view') && <Kpi user={user} toast={pushToast} />}
+            {view === 'sheetsync' && isAdmin && <SheetSync user={user} toast={pushToast} />}
+            {view === 'backup' && isAdmin && <Backup user={user} toast={pushToast} />}
             {view === 'audit' && isAdmin && <Audit user={user} />}
             {view === 'users' && isAdmin && <Users user={user} toast={pushToast} />}
             {view === 'profile' && <Profile user={user} onUserChange={setUser} toast={pushToast} />}
@@ -459,7 +482,10 @@ function Topbar({
   const h = healthUI[health]
 
   const roleLabel: Record<string, string> = {
-    admin: 'Administrator',
+    admin: 'Super User',
+    manager: 'Manager',
+    spv: 'Supervisor',
+    owner: 'Owner',
     noc: 'NOC',
     agent: 'Agent',
     sales: 'Sales',
@@ -468,7 +494,7 @@ function Topbar({
   }
 
   return (
-    <header className="sticky top-0 z-30 border-b border-border bg-[#FDFDFD]/90 backdrop-blur-md shadow-sm">
+    <header className="sticky top-0 z-30 border-b border-border bg-topbar/90 backdrop-blur-md shadow-sm">
       <div className="flex h-16 items-center justify-between gap-3 px-4 sm:px-6">
         <div className="flex min-w-0 items-center gap-3">
           {isNarrow && (
@@ -492,6 +518,8 @@ function Topbar({
           </span>
 
           <NotificationBell onOpenItem={onOpenItem} toast={toast} />
+
+          <ThemeToggle />
 
           {user && (
             <button
@@ -563,6 +591,10 @@ function MobileSheet({
             </div>
           )
         })}
+        <div className="mt-2 flex items-center justify-between rounded-card border border-border px-3 py-2">
+          <span className="text-body-sm text-text-secondary">Tema</span>
+          <ThemeToggle />
+        </div>
         <button onClick={onLogout} className="btn-secondary mt-2 w-full">
           <span className="material-symbols-outlined text-[18px]">logout</span>
           Keluar

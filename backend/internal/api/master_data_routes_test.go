@@ -34,15 +34,34 @@ func TestIsValidKindSlug(t *testing.T) {
 	}
 }
 
-func TestIsKnownRole(t *testing.T) {
-	valid := []string{"admin", "noc", "agent", "sales", "viewer", "customer"}
-	for _, r := range valid {
-		if !isKnownRole(r) {
-			t.Errorf("isKnownRole(%q) = false, want true", r)
+func TestNormalizeRole(t *testing.T) {
+	cases := map[string]string{
+		"Manager":    "manager",
+		"  SPV  ":    "spv",
+		"Super User": "super_user",
+		"owner":      "owner",
+		"a--b":       "a_b",
+		"HR-Ops":     "hr_ops",
+	}
+	for in, want := range cases {
+		if got := normalizeRole(in); got != want {
+			t.Errorf("normalizeRole(%q) = %q, want %q", in, got, want)
 		}
 	}
-	if isKnownRole("superuser") {
-		t.Errorf("isKnownRole(superuser) = true, want false")
+}
+
+func TestValidRoleSlug(t *testing.T) {
+	valid := []string{"manager", "spv", "owner", "hr_ops", "l1_support"}
+	for _, r := range valid {
+		if !validRoleSlug(r) {
+			t.Errorf("validRoleSlug(%q) = false, want true", r)
+		}
+	}
+	invalid := []string{"", "M", "Manager", "hr ops", "a-b", "a.b", "k/1"}
+	for _, r := range invalid {
+		if validRoleSlug(r) {
+			t.Errorf("validRoleSlug(%q) = true, want false", r)
+		}
 	}
 }
 

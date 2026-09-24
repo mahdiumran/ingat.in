@@ -97,6 +97,20 @@ func (s *Server) handleListTargets(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"targets": list, "total": len(list)})
 }
 
+// handleListTargetOptions mengembalikan daftar target ringan (id + nama) untuk
+// dropdown pada form. Terbuka untuk semua role terautentikasi; hanya nama yang
+// dibagikan (tanpa binding/destination) — F32.
+//
+// GET /api/targets/options
+func (s *Server) handleListTargetOptions(w http.ResponseWriter, r *http.Request) {
+	list, err := s.store.ListTargetOptions(r.Context())
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"targets": list, "total": len(list)})
+}
+
 // handleCreateTarget membuat target (admin/noc).
 //
 // POST /api/targets

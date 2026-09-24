@@ -27,6 +27,10 @@ backups/
 *.sql.gz.sha256
 *.dump
 *.db
+# PENTING: migrasi skema di-embed ke binary (//go:embed) dan WAJIB di-commit.
+# Aturan *.sql di atas akan mengabaikannya, jadi kecualikan direktori migrasi.
+!backend/internal/db/migrations/
+!backend/internal/db/migrations/*.sql
 
 # -----------------------------------------------------------------------------
 # Data runtime aplikasi
@@ -39,6 +43,8 @@ data/
 # -----------------------------------------------------------------------------
 # Binary hasil build (nama service di Dockerfile)
 backend/ingatin
+# Binary hasil build di akar repo (bila ada yang menjalankan `go build` dari ./)
+/ingatin
 backend/bin/
 backend/tmp/
 # Binary Go secara umum (kecuali direktori)
@@ -54,6 +60,10 @@ backend/tmp/
 *.coverprofile
 coverage.out
 coverage.html
+# Profil & hasil benchmark
+*.prof
+cpu.out
+mem.out
 # Vendor (bila tidak ingin di-commit; sesuaikan bila pakai vendoring)
 # vendor/
 
@@ -89,12 +99,19 @@ docker-compose.override.yml
 # -----------------------------------------------------------------------------
 .idea/
 .vscode/
-*.swp
-*.swo
-*~
 .project
 .classpath
 .settings/
+# Vim/Emacs
+*.swp
+*.swo
+*~
+\#*\#
+.\#*
+# JetBrains
+*.iml
+# Output build umum (hanya di akar repo, agar tidak menutupi direktori sumber)
+/build/
 
 # -----------------------------------------------------------------------------
 # OS

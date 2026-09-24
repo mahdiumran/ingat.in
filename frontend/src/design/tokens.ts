@@ -5,6 +5,12 @@
  * Ini adalah SATU-SATUNYA tempat nilai warna/font didefinisikan di kode TS.
  * Komponen harus memakai kelas Tailwind (dari tailwind.config.js) atau
  * referensi dari file ini — jangan menulis nilai hex di komponen.
+ *
+ * CATATAN (F28): objek `colors` di bawah adalah snapshot Light. Warna runtime
+ * sesungguhnya berasal dari CSS variable di src/styles.css (`:root` = Light,
+ * `.dark` = Dark) yang dipetakan ke kelas Tailwind. Kelas token otomatis ikut
+ * berganti tema; hanya nilai hex yang di-hard-code di sini yang perlu varian
+ * `dark:` (lihat tagColorClasses).
  */
 
 export const colors = {
@@ -95,6 +101,7 @@ export const statusTone: Record<string, string> = {
   // rfs
   planned: 'bg-info-container text-on-info-container border-outline-variant',
   in_progress_field: 'bg-primary-container text-on-primary-container border-outline-variant',
+  pending_troubleshoot: 'bg-warning-container text-on-warning-container border-outline-variant',
   activated: 'bg-success-container text-on-success-container border-outline-variant',
   postponed: 'bg-warning-container text-on-warning-container border-outline-variant',
   // ticket (F10)
@@ -105,6 +112,23 @@ export const statusTone: Record<string, string> = {
   closed: 'bg-surface-container text-text-secondary border-outline-variant',
   // daily task (F17)
   pending: 'bg-surface-container text-text-secondary border-outline-variant',
+  // F22: menunggu konfirmasi pelanggan
+  waiting_customer: 'bg-warning-container text-on-warning-container border-outline-variant',
+}
+
+/** statusLabel memberi label manusiawi; fallback ganti "_" dengan spasi. */
+export const STATUS_LABELS: Record<string, string> = {
+  planned: 'Planned',
+  in_progress: 'In Progress',
+  in_progress_field: 'Penanganan Lapangan',
+  pending_troubleshoot: 'Pending Troubleshooting',
+  activated: 'Closed / Completed',
+  postponed: 'Postponed',
+  cancelled: 'Cancelled',
+}
+
+export function statusLabel(status: string): string {
+  return STATUS_LABELS[status] ?? status.replace(/_/g, ' ')
 }
 export const priorityTone: Record<string, string> = {
   low: 'bg-surface-container text-text-secondary border-outline-variant',
@@ -119,11 +143,13 @@ export const priorityTone: Record<string, string> = {
  */
 export const tagColorClasses: Record<string, string> = {
   red: 'bg-critical-container text-on-critical-container border-critical/40',
-  orange: 'bg-[#ffe0c2] text-[#8a4b00] border-[#f0b37a]',
+  orange:
+    'bg-[#ffe0c2] text-[#8a4b00] border-[#f0b37a] dark:bg-[#4a2f12] dark:text-[#ffd9ae] dark:border-[#8a5a25]',
   yellow: 'bg-warning-container text-on-warning-container border-outline-variant',
   green: 'bg-success-container text-on-success-container border-outline-variant',
-  blue: 'bg-[#d6e4ff] text-[#1b4fd8] border-[#9dbcf7]',
-  purple: 'bg-[#eadcff] text-[#5b21b6] border-[#c9aef5]',
+  blue: 'bg-[#d6e4ff] text-[#1b4fd8] border-[#9dbcf7] dark:bg-[#172a52] dark:text-[#aec8ff] dark:border-[#2f4d8a]',
+  purple:
+    'bg-[#eadcff] text-[#5b21b6] border-[#c9aef5] dark:bg-[#2e1e4d] dark:text-[#d6bcff] dark:border-[#5b3fa0]',
   gray: 'bg-surface-container text-text-secondary border-outline-variant',
 }
 

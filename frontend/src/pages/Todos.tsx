@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ApiUser, notificationApi, Target, WorkItem, workItemsApi } from '../api'
+import { api, ApiUser, notificationApi, WorkItem, workItemsApi } from '../api'
 import {
   ConfirmDialog,
   EmptyState,
@@ -52,6 +52,7 @@ export default function Todos({
   const [status, setStatus] = useState('')
   const [priority, setPriority] = useState('')
   const [owner, setOwner] = useState('')
+  const [teamFilter, setTeamFilter] = useState('')
   const [offset, setOffset] = useState(0)
   const [showCreate, setShowCreate] = useState(false)
   const [editing, setEditing] = useState<WorkItem | null>(null)
@@ -61,6 +62,10 @@ export default function Todos({
   const [confirmBusy, setConfirmBusy] = useState(false)
 
   const tagColors = useTagColors()
+  // F31: tim — untuk filter (admin) & pemilih tim saat membuat todo.
+  const teams = useAsync(() => api.teams(), [])
+  const teamList = teams.data?.teams ?? []
+  const teamName = (id?: string) => teamList.find((t) => t.id === id)?.name
 
   // Buka detail saat lonceng notifikasi meminta fokus ke item tertentu.
   useEffect(() => {
@@ -80,11 +85,12 @@ export default function Todos({
         ...(status ? { status } : {}),
         ...(priority ? { priority } : {}),
         ...(owner ? { owner } : {}),
+        ...(teamFilter ? { team_id: teamFilter } : {}),
         ...(debouncedSearch ? { q: debouncedSearch } : {}),
         limit: String(limit),
         offset: String(offset),
       }),
-    [status, priority, owner, debouncedSearch, offset],
+    [status, priority, owner, teamFilter, debouncedSearch, offset],
   )
 
   const rows = items.data?.items ?? []
@@ -245,6 +251,29 @@ export default function Todos({
               }}
             />
           </div>
+          {isAdmin && (
+            <div>
+              <label className="label-field" htmlFor="t-team">
+                Tim
+              </label>
+              <select
+                id="t-team"
+                className="input"
+                value={teamFilter}
+                onChange={(e) => {
+                  setTeamFilter(e.target.value)
+                  setOffset(0)
+                }}
+              >
+                <option value="">Semua tim</option>
+                {teamList.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
       </section>
 
@@ -299,6 +328,7 @@ export default function Todos({
                 <tr>
                   <th>Ref</th>
                   <th>Judul</th>
+                  <th>Tim</th>
                   <th>Prioritas</th>
                   <th>Status</th>
                   <th>Tag</th>
@@ -321,6 +351,11 @@ export default function Todos({
                       {it.device_ref && (
                         <span className="mono text-label-sm text-text-secondary">{it.device_ref}</span>
                       )}
+                    </td>
+                    <td>
+                      <span className="badge border-outline-variant bg-surface-container text-text-secondary">
+                        {teamName(it.team_id) ?? 'Tanpa tim'}
+                      </span>
                     </td>
                     <td>
                       <PriorityBadge priority={it.priority} />
@@ -375,6 +410,8 @@ export default function Todos({
 
       {showCreate && (
         <TaskForm
+          user={user}
+          teams={teamList}
           onClose={() => setShowCreate(false)}
           onSaved={() => {
             setShowCreate(false)
@@ -387,6 +424,8 @@ export default function Todos({
 
       {editing && (
         <TaskForm
+          user={user}
+          teams={teamList}
           entry={editing}
           onClose={() => setEditing(null)}
           onSaved={() => {
@@ -438,17 +477,21 @@ function toLocalInput(iso?: string): string {
 
 export function TaskForm({
   entry,
+  user,
+  teams = [],
   onClose,
   onSaved,
   onError,
 }: {
   entry?: WorkItem
+  user?: ApiUser | null
+  teams?: { id: string; name: string }[]
   onClose: () => void
   onSaved: () => void
   onError: (msg: string) => void
 }) {
   const isEdit = !!entry
-  const targets = useAsync(() => notificationApi.targets(), [])
+  const targets = useAsync(() => notificationApi.targetOptions(), [])
 
   const [title, setTitle] = useState(entry?.title ?? '')
   const [description, setDescription] = useState(entry?.description ?? '')
@@ -458,7 +501,9 @@ export function TaskForm({
   const [targetId, setTargetId] = useState(entry?.target_id ?? '')
   const [deviceRef, setDeviceRef] = useState(entry?.device_ref ?? '')
   const [tags, setTags] = useState((entry?.tags ?? []).join(', '))
+  const [teamId, setTeamId] = useState(entry?.team_id ?? user?.team_id ?? '')
   const [busy, setBusy] = useState(false)
+  const isAdmin = user?.role === 'admin'
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
@@ -472,6 +517,8 @@ export function TaskForm({
         due_at: dueAt ? new Date(dueAt).toISOString() : '',
         target_id: targetId || '',
         device_ref: deviceRef,
+        // F31: pembagian per tim (admin dapat memilih; non-admin dipaksa server).
+        ...(isAdmin && teamId ? { team_id: teamId } : {}),
         tags: tags
           ? tags
               .split(',')
@@ -566,6 +613,25 @@ export function TaskForm({
           </div>
         </div>
 
+        {isAdmin && (
+          <div>
+            <label className="label-field" htmlFor="nt-team">
+              Tim
+            </label>
+            <select id="nt-team" className="input" value={teamId} onChange={(e) => setTeamId(e.target.value)}>
+              <option value="">— Tanpa tim —</option>
+              {teams.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-label-sm text-text-secondary">
+              Todo hanya terlihat oleh tim yang dipilih (admin melihat semua).
+            </p>
+          </div>
+        )}
+
         <div className="grid gap-3.5 sm:grid-cols-2">
           <div>
             <label className="label-field" htmlFor="nt-due">
@@ -585,7 +651,7 @@ export function TaskForm({
             </label>
             <select id="nt-target" className="input" value={targetId} onChange={(e) => setTargetId(e.target.value)}>
               <option value="">— Default sistem —</option>
-              {((targets.data?.targets ?? []) as Target[]).map((t) => (
+              {(targets.data?.targets ?? []).map((t) => (
                 <option key={t.id} value={t.id}>
                   {t.name}
                 </option>

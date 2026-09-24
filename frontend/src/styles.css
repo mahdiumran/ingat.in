@@ -3,9 +3,210 @@
 @tailwind utilities;
 
 /* ---------------------------------------------------------------------------
-   Dasar
+   Tema (F28) — token warna sebagai CSS variable.
+   Nilai dalam format "R G B" (space-separated) agar modifier opacity Tailwind
+   (mis. bg-surface-container-lowest/90) tetap bekerja via <alpha-value>.
+
+   :root          -> Light (default)
+   .dark          -> Dark  (di-set di <html> oleh lib/theme.ts / script anti-FOUC)
+
+   Komponen TIDAK boleh menulis hex langsung; gunakan kelas token Tailwind
+   (bg-surface, text-text-primary, border-border, ...) yang dipetakan ke
+   var() di tailwind.config.js.
    --------------------------------------------------------------------------- */
 @layer base {
+  :root {
+    color-scheme: light;
+
+    /* Palet permukaan */
+    --background: 249 249 255;
+    --on-background: 20 27 43;
+    --surface: 249 249 255;
+    --surface-dim: 211 218 239;
+    --surface-bright: 249 249 255;
+    --surface-container-lowest: 255 255 255;
+    --surface-container-low: 241 243 255;
+    --surface-container: 233 237 255;
+    --surface-container-high: 225 232 253;
+    --surface-container-highest: 220 226 247;
+    --surface-variant: 220 226 247;
+    --on-surface: 20 27 43;
+    --on-surface-variant: 61 74 62;
+    --inverse-surface: 41 48 64;
+    --inverse-on-surface: 237 240 255;
+
+    /* Teks */
+    --text-primary: 17 24 39;
+    --text-secondary: 75 85 99;
+
+    /* Garis */
+    --border: 229 231 235;
+    --outline: 109 123 109;
+    --outline-variant: 188 202 187;
+
+    /* Primary */
+    --primary: 0 109 54;
+    --on-primary: 255 255 255;
+    --primary-container: 74 222 128;
+    --on-primary-container: 0 94 45;
+    --primary-fixed: 109 254 156;
+    --primary-fixed-dim: 77 224 130;
+    --on-primary-fixed: 0 33 12;
+    --on-primary-fixed-variant: 0 82 39;
+    --inverse-primary: 77 224 130;
+    --surface-tint: 0 109 54;
+
+    /* Secondary */
+    --secondary: 93 95 95;
+    --on-secondary: 255 255 255;
+    --secondary-container: 223 224 224;
+    --on-secondary-container: 97 99 99;
+
+    /* Tertiary */
+    --tertiary: 49 105 75;
+    --on-tertiary: 255 255 255;
+    --tertiary-container: 151 209 172;
+    --on-tertiary-container: 35 91 62;
+
+    /* Error */
+    --error: 186 26 26;
+    --on-error: 255 255 255;
+    --error-container: 255 218 214;
+    --on-error-container: 147 0 10;
+
+    /* Token semantik status Ingat.in */
+    --success: 0 109 54;
+    --success-container: 180 240 201;
+    --on-success-container: 0 33 17;
+    --warning: 180 83 9;
+    --warning-container: 253 230 138;
+    --on-warning-container: 120 53 15;
+    --critical: 186 26 26;
+    --critical-container: 255 218 214;
+    --on-critical-container: 147 0 10;
+    --info: 49 105 75;
+    --info-container: 151 209 172;
+    --on-info-container: 35 91 62;
+    --unknown: 109 123 109;
+
+    /* Aksen brand (CTA m2c) */
+    --accent-brand: 74 222 128;
+    --accent-soft: 187 247 208;
+
+    /* Bayangan (intensitas diturunkan di dark) */
+    --shadow-card: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+    --shadow-raised: 0 4px 6px -1px rgb(0 0 0 / 0.08), 0 2px 4px -2px rgb(0 0 0 / 0.06);
+    --shadow-modal: 0 20px 25px -5px rgb(0 0 0 / 0.10), 0 8px 10px -6px rgb(0 0 0 / 0.10);
+
+    /* Topbar (F28) */
+    --topbar: 253 253 253;
+
+    /* Palet grafik (KPI) — nilai solid siap pakai untuk Recharts */
+    --palette-success: #006d36;
+    --palette-warning: #b45309;
+    --palette-critical: #ba1a1a;
+    --palette-primary: #4ade80;
+    --palette-info: #31694b;
+    --palette-muted: #bccabb;
+    --palette-grid: #e9edff;
+  }
+
+  .dark {
+    color-scheme: dark;
+
+    /* Palet permukaan (material dark) */
+    --background: 15 18 26;
+    --on-background: 230 234 244;
+    --surface: 15 18 26;
+    --surface-dim: 15 18 26;
+    --surface-bright: 46 52 66;
+    --surface-container-lowest: 26 30 41;
+    --surface-container-low: 32 37 50;
+    --surface-container: 39 45 59;
+    --surface-container-high: 47 54 70;
+    --surface-container-highest: 56 64 82;
+    --surface-variant: 60 68 86;
+    --on-surface: 230 234 244;
+    --on-surface-variant: 197 205 220;
+    --inverse-surface: 226 230 240;
+    --inverse-on-surface: 36 42 56;
+
+    /* Teks */
+    --text-primary: 238 241 248;
+    --text-secondary: 165 174 192;
+
+    /* Garis */
+    --border: 56 63 80;
+    --outline: 130 142 160;
+    --outline-variant: 66 74 92;
+
+    /* Primary — brand tetap hijau; kontainer lebih gelap */
+    --primary: 74 222 128;
+    --on-primary: 0 45 22;
+    --primary-container: 20 90 50;
+    --on-primary-container: 155 245 183;
+    --primary-fixed: 109 254 156;
+    --primary-fixed-dim: 77 224 130;
+    --on-primary-fixed: 0 33 12;
+    --on-primary-fixed-variant: 0 82 39;
+    --inverse-primary: 0 109 54;
+    --surface-tint: 74 222 128;
+
+    /* Secondary */
+    --secondary: 197 201 208;
+    --on-secondary: 25 30 40;
+    --secondary-container: 60 67 82;
+    --on-secondary-container: 210 215 226;
+
+    /* Tertiary */
+    --tertiary: 151 209 172;
+    --on-tertiary: 12 40 24;
+    --tertiary-container: 35 91 62;
+    --on-tertiary-container: 179 233 199;
+
+    /* Error */
+    --error: 255 180 171;
+    --on-error: 105 0 5;
+    --error-container: 74 18 18;
+    --on-error-container: 255 218 214;
+
+    /* Status — kontainer digelapkan, teks diterangkan */
+    --success: 122 226 160;
+    --success-container: 15 61 36;
+    --on-success-container: 159 240 189;
+    --warning: 253 186 116;
+    --warning-container: 71 45 9;
+    --on-warning-container: 253 224 175;
+    --critical: 255 180 171;
+    --critical-container: 74 20 20;
+    --on-critical-container: 255 218 214;
+    --info: 151 209 172;
+    --info-container: 28 74 50;
+    --on-info-container: 179 233 199;
+    --unknown: 148 160 178;
+
+    /* Aksen */
+    --accent-brand: 74 222 128;
+    --accent-soft: 30 74 48;
+
+    /* Bayangan lebih pekat agar terlihat di latar gelap */
+    --shadow-card: 0 1px 2px 0 rgb(0 0 0 / 0.4);
+    --shadow-raised: 0 4px 6px -1px rgb(0 0 0 / 0.5), 0 2px 4px -2px rgb(0 0 0 / 0.4);
+    --shadow-modal: 0 20px 25px -5px rgb(0 0 0 / 0.6), 0 8px 10px -6px rgb(0 0 0 / 0.5);
+
+    /* Topbar */
+    --topbar: 26 30 41;
+
+    /* Palet grafik (KPI) — versi terang untuk latar gelap */
+    --palette-success: #6ee7a0;
+    --palette-warning: #fbbf24;
+    --palette-critical: #f87171;
+    --palette-primary: #4ade80;
+    --palette-info: #7fc79b;
+    --palette-muted: #64748b;
+    --palette-grid: #2a3140;
+  }
+
   html,
   body,
   #root {

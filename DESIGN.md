@@ -182,3 +182,60 @@ Aturan:
   `done/total` (`bg-success`).
 
 Implementasi: `pages/DailyTasks.tsx`; data dari `GET /api/items?type=daily_task&date=&carry_over=`.
+
+---
+
+## 10. Pola Integrasi Berbasis Antrean (Google Sheets)
+
+Integrasi keluar (mis. Google Sheets) mengikuti pola yang sama dengan
+`notification_outbox`, agar UI tidak pernah menunggu jaringan pihak ketiga:
+
+1. **Aksi pengguna selesai lebih dulu** — saat Todo Task / Daily Task dibuat,
+   diubah, atau dihapus, baris ditulis ke antrean DB (`sheet_sync_queue`) sebagai
+   *best-effort*. Kegagalan enqueue tidak menggagalkan operasi utama.
+2. **Worker mengirim berkala** — antrean diklaim dengan `FOR UPDATE SKIP LOCKED`,
+   ditulis ke pihak ketiga, lalu ditandai `sent`/`failed` dengan backoff.
+3. **Idempotent** — satu entri per work item (`event_key = sheet:<id>`); payload
+   di-*upsert* saat item berubah sehingga perubahan terakhir selalu menang dan
+   tidak ada baris ganda.
+
+Panduan UI (halaman *Google Sheets*):
+- **Konfigurasi dikelola pengguna**, bukan hardcode: Spreadsheet ID, nama sheet,
+  dan kredensial diisi admin dari panel. Nilai awal (`Todo`) hanya saran.
+- Kredensial **tidak pernah ditampilkan kembali**; UI menampilkan `client_email`
+  + penanda "tersimpan" memakai pola *mask* yang sama dengan provider notifikasi.
+- **Kartu status** menampilkan 4 angka antrean (Menunggu/Mengirim/Terkirim/Gagal)
+  dengan warna semantik, plus `last_sync_at` dan `last_error` yang dapat dibaca.
+- Pesan error pihak ketiga diterjemahkan menjadi bahasa Indonesia yang dapat
+  ditindaklanjuti (mis. `403` → "bagikan spreadsheet ke client_email sebagai Editor").
+
+---
+
+## 11. Halaman KPI & Grafik (F20)
+
+Halaman **KPI & SLA** memakai **Recharts** dengan palet dari token desain
+(`success`/`warning`/`critical`/`primary`/`info`), konsisten di tema terang/gelap.
+
+| Grafik | Tujuan |
+|---|---|
+| **Donut** | Komposisi SLA: tepat waktu / terlambat / berjalan |
+| **Radial (gauge)** | Skor SLA keseluruhan (0–100) |
+| **Bar berkelompok** | met% respons vs penyelesaian **per prioritas** |
+| **Area** | Tren penyelesaian harian + persentase tepat waktu |
+| **Bar horizontal** | Peringkat person berdasarkan skor |
+| **Bar bertumpuk** | Beban kerja per person (selesai/berjalan/pelanggaran) |
+
+Aturan:
+- Warna skor: hijau ≥ 80, kuning 50–79, merah < 50 (fungsi `scoreColor`).
+- Setiap grafik punya kartu (`ChartCard`) dengan judul + subjudul; tampilkan
+  placeholder "Belum ada data" bila kosong agar layout tidak melompat.
+- Filter periode memakai rentang tanggal + tombol pintas (Hari ini / 7 hari /
+  Bulan ini / Bulan lalu / Semua).
+
+### Catatan penanganan & lampiran (F21)
+- Kartu **Catatan Penanganan** pada tab Ringkasan: tiga bagian (Issue ditemukan,
+  Troubleshooting, Action/Solusi) dengan mode baca/edit.
+- Bagian **Lampiran Pendukung** pada tab Aktivitas: daftar dengan ikon jenis,
+  ukuran, pengunggah, dan waktu; unduh/hapus. Tombol unggah menyatu dengan gaya
+  `btn-secondary`.
+- Panel **Ikut Menangani** menampilkan penangan sebagai chip dengan tombol lepas.

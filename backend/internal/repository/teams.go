@@ -10,12 +10,22 @@ import (
 
 // Team & Organization — entitas pendukung RBAC dan pengelompokan kerja.
 
-const teamColumns = `id, name, description, is_active, created_at, updated_at`
+const teamColumns = `id, name, description, category, target_id, is_active, created_at, updated_at`
 const orgColumns = `id, name, code, contacts, is_active, created_at, updated_at`
+
+// scanTeam memindai satu baris tim (kolom mengikuti teamColumns).
+func scanTeam(row interface{ Scan(...any) error }) (*models.Team, error) {
+	t := &models.Team{}
+	if err := row.Scan(&t.ID, &t.Name, &t.Description, &t.Category, &t.TargetID,
+		&t.IsActive, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		return nil, err
+	}
+	return t, nil
+}
 
 // ListTeams mengembalikan seluruh tim.
 func (s *Store) ListTeams(ctx context.Context) ([]models.Team, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+teamColumns+` FROM teams ORDER BY name`)
+	rows, err := s.pool.Query(ctx, `SELECT `+teamColumns+` FROM teams ORDER BY category, name`)
 	if err != nil {
 		return nil, err
 	}
@@ -23,44 +33,37 @@ func (s *Store) ListTeams(ctx context.Context) ([]models.Team, error) {
 
 	out := []models.Team{}
 	for rows.Next() {
-		var t models.Team
-		if err := rows.Scan(&t.ID, &t.Name, &t.Description, &t.IsActive, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		t, err := scanTeam(rows)
+		if err != nil {
 			return nil, err
 		}
-		out = append(out, t)
+		out = append(out, *t)
 	}
 	return out, rows.Err()
 }
 
 // CreateTeam membuat tim baru.
-func (s *Store) CreateTeam(ctx context.Context, name, description string) (*models.Team, error) {
+func (s *Store) CreateTeam(ctx context.Context, name, description, category string, targetID *uuid.UUID) (*models.Team, error) {
 	row := s.pool.QueryRow(ctx, `
-		INSERT INTO teams (name, description) VALUES ($1,$2)
-		RETURNING `+teamColumns, name, description)
-
-	t := &models.Team{}
-	if err := row.Scan(&t.ID, &t.Name, &t.Description, &t.IsActive, &t.CreatedAt, &t.UpdatedAt); err != nil {
-		return nil, mapErr(err)
-	}
-	return t, nil
+		INSERT INTO teams (name, description, category, target_id) VALUES ($1,$2,$3,$4)
+		RETURNING `+teamColumns, name, description, category, targetID)
+	return scanTeam(row)
 }
 
-// UpdateTeam memperbarui nama/deskripsi/status tim.
-func (s *Store) UpdateTeam(ctx context.Context, id uuid.UUID, name, description *string, isActive *bool) (*models.Team, error) {
+// UpdateTeam memperbarui nama/deskripsi/kategori/status/target tim.
+// targetID & setTarget memakai pola set-flag agar dapat dikosongkan (NULL).
+func (s *Store) UpdateTeam(ctx context.Context, id uuid.UUID, name, description, category *string, isActive *bool, targetID *uuid.UUID, setTarget bool) (*models.Team, error) {
 	row := s.pool.QueryRow(ctx, `
 		UPDATE teams SET
 			name        = COALESCE($2, name),
 			description = COALESCE($3, description),
-			is_active   = COALESCE($4, is_active),
+			category    = COALESCE($4, category),
+			is_active   = COALESCE($5, is_active),
+			target_id   = CASE WHEN $7::boolean THEN $6 ELSE target_id END,
 			updated_at  = now()
 		WHERE id = $1
-		RETURNING `+teamColumns, id, name, description, isActive)
-
-	t := &models.Team{}
-	if err := row.Scan(&t.ID, &t.Name, &t.Description, &t.IsActive, &t.CreatedAt, &t.UpdatedAt); err != nil {
-		return nil, mapErr(err)
-	}
-	return t, nil
+		RETURNING `+teamColumns, id, name, description, category, isActive, targetID, setTarget)
+	return scanTeam(row)
 }
 
 // DeleteTeam menghapus tim (referensi user/work_item menjadi NULL).

@@ -149,14 +149,20 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// F22: sertakan izin efektif + penanda super user agar UI dapat menyembunyikan
+	// menu/aksi yang tidak diizinkan.
+	perms := s.store.EffectivePermissions(r.Context(), user.Role)
+
 	resp := map[string]any{
-		"id":         user.ID,
-		"username":   user.Username,
-		"email":      user.Email,
-		"full_name":  user.FullName,
-		"role":       user.Role,
-		"is_active":  user.IsActive,
-		"created_at": user.CreatedAt,
+		"id":          user.ID,
+		"username":    user.Username,
+		"email":       user.Email,
+		"full_name":   user.FullName,
+		"role":        user.Role,
+		"is_active":   user.IsActive,
+		"created_at":  user.CreatedAt,
+		"permissions": perms,
+		"is_super":    s.store.RoleIsSuper(r.Context(), user.Role),
 	}
 	if user.TeamID != nil {
 		resp["team_id"] = user.TeamID

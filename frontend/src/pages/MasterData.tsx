@@ -28,6 +28,8 @@ export default function MasterData({
   const kinds = data.data?.kinds ?? []
   const entries = data.data?.entries ?? []
   const isAdmin = user?.role === 'admin'
+  // F32: template notifikasi termasuk Notification Center (izin providers.view).
+  const canViewTemplates = !!user && (user.is_super || (user.permissions ?? []).includes('providers.view'))
 
   function countOf(kind: string): number {
     return entries.filter((e) => e.kind === kind).length
@@ -61,8 +63,8 @@ export default function MasterData({
             />
           ))}
 
-          {/* Kotak editor notifikasi Telegram & WA (admin only). */}
-          {isAdmin && (
+          {/* Kotak editor notifikasi Telegram & WA (izin providers.view). */}
+          {canViewTemplates && (
             <button
               onClick={onOpenTemplates}
               className="card group relative flex flex-col items-start gap-3 p-5 text-left transition hover:border-primary hover:shadow-raised"
@@ -77,7 +79,7 @@ export default function MasterData({
                 </p>
               </div>
               <span className="badge border-outline-variant bg-surface-container text-text-secondary">
-                admin
+                providers.view
               </span>
             </button>
           )}

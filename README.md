@@ -13,13 +13,17 @@ semuanya dikirim ke **Telegram** dan **WhatsApp**.
 
 | Area | Keterangan |
 |---|---|
-| **Todo Tasks** | Buat task; notifikasi otomatis terkirim saat dibuat |
+| **Todo Tasks** | Task terencana; notifikasi otomatis terkirim saat dibuat |
+| **Daily Task** | Checklist harian bergaya todo list (papan 3 kolom) dengan carry-over task belum selesai |
+| **Ticketing** | Insiden/permintaan/change dengan SLA otomatis (first response → closed) |
 | **Reminder** | Reminder dengan titik peringatan berjenjang (H-7/H-3/H-2/H-1/H-0) + eskalasi LATE |
 | **RFS** | Data RFS diisi admin sales; NOC otomatis diingatkan saat tanggal RFS mendekat |
 | **Notifikasi** | Telegram + WhatsApp; target berupa grup/tim atau personal; template bisa diedit |
 | **Provider WA** | WAHA (bawaan), atau Fonnte/Wablas/Starsender/custom HTTP — bisa diganti dari panel |
+| **Google Sheets** | Todo Task & Daily Task otomatis tercatat ke spreadsheet (service account, antrean tahan gangguan) |
+| **KPI & SLA** | Siklus SLA per tiket, penanganan (owner + ikut menangani), KPI per person dengan grafik |
+| **Lampiran & Penanganan** | Lampiran pendukung (50 MB) + catatan Issue/Troubleshooting/Solusi pada tiket |
 | **Audit & Outbox** | Setiap pengiriman tercatat: status, percobaan, error |
-| **Ticketing + SLA** | *Skema database sudah siap sejak awal* (UI menyusul) |
 
 ---
 
@@ -64,6 +68,7 @@ Kredensial admin awal tercetak oleh installer (atau lihat `.env`).
 | [`PLAN.md`](PLAN.md) | Plan master, keputusan terkunci, konvensi agent, fase F1–F15 |
 | [`DEPLOYMENT.md`](DEPLOYMENT.md) | Deploy, env, DB (host & container), nginx/TLS, WAHA/QR, troubleshooting |
 | [`OPERATIONS.md`](OPERATIONS.md) | Runbook harian, health, outbox gagal, backup, hardening |
+| [`BACKUP_RESTORE.md`](BACKUP_RESTORE.md) | Backup & restore database PostgreSQL (postgres, **bukan MySQL**) secara rinci |
 | [`DEVELOPMENT.md`](DEVELOPMENT.md) | Setup dev, konvensi kode, cara tambah migrasi/provider/template |
 | [`ROADMAP.md`](ROADMAP.md) | Rencana F10–F15 (ticketing, SLA, inbound, reporting) |
 

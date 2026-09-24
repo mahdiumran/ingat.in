@@ -115,3 +115,51 @@ func TestKnownItemTypeDailyTask(t *testing.T) {
 		t.Error("daily_task harus item_type yang dikenal")
 	}
 }
+
+func TestUpdateSheetParamsFrom(t *testing.T) {
+	current := &models.SheetSyncConfig{
+		Enabled: true, SpreadsheetID: "OLD_ID", SheetName: "Todo",
+	}
+
+	// Permintaan kosong harus mempertahankan nilai lama (PATCH semantics).
+	p := updateSheetParamsFrom(current, sheetSyncRequest{})
+	if !p.Enabled || p.SpreadsheetID != "OLD_ID" || p.SheetName != "Todo" {
+		t.Errorf("permintaan kosong mengubah nilai: %+v", p)
+	}
+	if p.ServiceAccountEnc != nil {
+		t.Error("service account tidak boleh diubah bila tidak dikirim")
+	}
+
+	// Field yang dikirim harus menimpa.
+	off := false
+	id := "NEW_ID"
+	name := "Kerjaan NOC"
+	p = updateSheetParamsFrom(current, sheetSyncRequest{
+		Enabled: &off, SpreadsheetID: &id, SheetName: &name,
+	})
+	if p.Enabled || p.SpreadsheetID != "NEW_ID" || p.SheetName != "Kerjaan NOC" {
+		t.Errorf("field yang dikirim tidak menimpa: %+v", p)
+	}
+
+	// Nama sheet kosong harus jatuh kembali ke nilai lama (bukan menghapus).
+	empty := "   "
+	p = updateSheetParamsFrom(current, sheetSyncRequest{SheetName: &empty})
+	if p.SheetName != "Todo" {
+		t.Errorf("nama sheet kosong harus mempertahankan nilai lama, got %q", p.SheetName)
+	}
+}
+
+func TestIsSheetSyncedType(t *testing.T) {
+	synced := []string{models.ItemTask, models.ItemDailyTask}
+	for _, it := range synced {
+		if !isSheetSyncedType(it) {
+			t.Errorf("isSheetSyncedType(%q) = false, want true", it)
+		}
+	}
+	notSynced := []string{models.ItemReminder, models.ItemRFS, models.ItemIncident, models.ItemRequest, models.ItemChange, ""}
+	for _, it := range notSynced {
+		if isSheetSyncedType(it) {
+			t.Errorf("isSheetSyncedType(%q) = true, want false", it)
+		}
+	}
+}

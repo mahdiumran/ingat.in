@@ -47,28 +47,24 @@ type resetPasswordRequest struct {
 }
 
 type teamCreateRequest struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
+	Name        string  `json:"name"`
+	Description string  `json:"description"`
+	Category    string  `json:"category"`
+	TargetID    *string `json:"target_id"`
 }
 
 type teamUpdateRequest struct {
 	Name        *string `json:"name"`
 	Description *string `json:"description"`
+	Category    *string `json:"category"`
 	IsActive    *bool   `json:"is_active"`
+	// F25: target notifikasi tim; kirim "" atau null untuk mengosongkan.
+	TargetID *string `json:"target_id"`
 }
 
 // ---------------------------------------------------------------------------
 // Validasi
 // ---------------------------------------------------------------------------
-
-var validRoles = map[string]bool{
-	models.RoleAdmin:    true,
-	models.RoleAgent:    true,
-	models.RoleNOC:      true,
-	models.RoleSales:    true,
-	models.RoleViewer:   true,
-	models.RoleCustomer: true,
-}
 
 // parseOptionalUUID mengubah string kosong menjadi nil.
 func parseOptionalUUID(raw *string) (*uuid.UUID, error) {
@@ -129,7 +125,7 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "password minimal 8 karakter")
 		return
 	}
-	if !validRoles[req.Role] {
+	if !s.isKnownRole(r.Context(), req.Role) {
 		writeErr(w, http.StatusBadRequest, "role tidak dikenal")
 		return
 	}
@@ -189,7 +185,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Role != nil && !validRoles[*req.Role] {
+	if req.Role != nil && !s.isKnownRole(r.Context(), *req.Role) {
 		writeErr(w, http.StatusBadRequest, "role tidak dikenal")
 		return
 	}
@@ -224,7 +220,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	// tidak pernah kehilangan administrator terakhir.
 	current := userFrom(r)
 	if current != nil && current.ID == id {
-		if req.Role != nil && *req.Role != models.RoleAdmin {
+		if req.Role != nil && !s.store.RoleIsSuper(r.Context(), *req.Role) {
 			writeErr(w, http.StatusBadRequest, "tidak dapat mengubah role akun sendiri")
 			return
 		}
@@ -379,7 +375,13 @@ func (s *Server) handleCreateTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	team, err := s.store.CreateTeam(r.Context(), req.Name, req.Description)
+	targetID, err := parseOptionalUUID(req.TargetID)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "target_id tidak valid")
+		return
+	}
+
+	team, err := s.store.CreateTeam(r.Context(), req.Name, req.Description, strings.TrimSpace(req.Category), targetID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -402,7 +404,21 @@ func (s *Server) handleUpdateTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	team, err := s.store.UpdateTeam(r.Context(), id, req.Name, req.Description, req.IsActive)
+	// Deteksi apakah target_id dikirim (untuk membedakan "tidak diubah" vs
+	// "dikosongkan"). decodeJSON sudah mengonsumsi body, jadi kita pakai
+	// sinyal TargetID != nil (string kosong = kosongkan).
+	var targetID *uuid.UUID
+	setTarget := req.TargetID != nil
+	if setTarget && strings.TrimSpace(*req.TargetID) != "" {
+		parsed, perr := uuid.Parse(strings.TrimSpace(*req.TargetID))
+		if perr != nil {
+			writeErr(w, http.StatusBadRequest, "target_id tidak valid")
+			return
+		}
+		targetID = &parsed
+	}
+
+	team, err := s.store.UpdateTeam(r.Context(), id, req.Name, req.Description, trimPtr(req.Category), req.IsActive, targetID, setTarget)
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, "tim tidak ditemukan")

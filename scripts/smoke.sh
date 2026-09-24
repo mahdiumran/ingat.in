@@ -93,6 +93,22 @@ else
   bad "endpoint tak dikenal mengembalikan $NOTFOUND (ingin 404)"
 fi
 
+# F18: endpoint sinkronisasi spreadsheet harus dilindungi autentikasi.
+SHEET_NOAUTH="$(http_code_from "$API_BASE/api/sheet-sync")"
+if [[ "$SHEET_NOAUTH" == "401" ]]; then
+  ok "GET /api/sheet-sync tanpa token mengembalikan 401"
+else
+  bad "GET /api/sheet-sync tanpa token mengembalikan $SHEET_NOAUTH (ingin 401)"
+fi
+
+# F20: endpoint KPI harus dilindungi autentikasi.
+KPI_NOAUTH="$(http_code_from "$API_BASE/api/kpi/sla")"
+if [[ "$KPI_NOAUTH" == "401" ]]; then
+  ok "GET /api/kpi/sla tanpa token mengembalikan 401"
+else
+  bad "GET /api/kpi/sla tanpa token mengembalikan $KPI_NOAUTH (ingin 401)"
+fi
+
 # ---------------------------------------------------------------------------
 head "3. Database"
 # ---------------------------------------------------------------------------
@@ -122,7 +138,7 @@ if command -v psql >/dev/null 2>&1; then
 
     [[ "${ORG:-0}" -ge 1 ]]   && ok "seed organisasi: $ORG"     || bad "seed organisasi kosong"
     [[ "${TEAMS:-0}" -ge 3 ]] && ok "seed team: $TEAMS"          || bad "seed team = ${TEAMS:-0} (ingin >= 3)"
-    [[ "${WF:-0}" -ge 6 ]]    && ok "seed workflow: $WF"         || bad "seed workflow = ${WF:-0} (ingin >= 6)"
+    [[ "${WF:-0}" -ge 7 ]]    && ok "seed workflow: $WF"         || bad "seed workflow = ${WF:-0} (ingin >= 7)"
     [[ "${POL:-0}" -ge 2 ]]   && ok "seed policy eskalasi: $POL" || bad "seed policy = ${POL:-0} (ingin >= 2)"
     [[ "${TGT:-0}" -ge 1 ]]   && ok "seed target notifikasi: $TGT" || bad "seed target kosong"
     [[ "${TPL:-0}" -ge 10 ]]  && ok "seed template notifikasi: $TPL" || bad "seed template = ${TPL:-0} (ingin >= 10)"
@@ -229,6 +245,50 @@ if command -v psql >/dev/null 2>&1; then
     DESC_TPL="$(q "SELECT count(*) FROM notification_templates WHERE body_tpl LIKE '%Deskripsi :%' AND key IN ('TODO_CREATED','REMINDER_OFFSET','RFS_UPCOMING')")"
     [[ "${DESC_TPL:-0}" -ge 3 ]] && ok "deskripsi dilampirkan pada template notifikasi: $DESC_TPL" \
       || bad "template notifikasi tanpa deskripsi = ${DESC_TPL:-0} (ingin >= 3; migrasi 00009?)"
+
+    # F17: Daily Task (item_type=daily_task; migrasi 00010).
+    DAILY_WF="$(q "SELECT count(*) FROM workflow_definitions WHERE item_type='daily_task'")"
+    [[ "${DAILY_WF:-0}" -ge 1 ]] && ok "workflow Daily Task terdaftar" \
+      || bad "workflow daily_task tidak ada (migrasi 00010 belum diterapkan?)"
+
+    DAILY_CHECK="$(q "SELECT count(*) FROM pg_constraint WHERE conname='work_items_item_type_check' AND pg_get_constraintdef(oid) LIKE '%daily_task%'")"
+    [[ "${DAILY_CHECK:-0}" -ge 1 ]] && ok "CHECK item_type menerima daily_task" \
+      || bad "constraint item_type belum memuat daily_task (migrasi 00010?)"
+
+    DAILY_IDX="$(q "SELECT count(*) FROM pg_indexes WHERE indexname='ix_work_items_daily'")"
+    [[ "${DAILY_IDX:-0}" -ge 1 ]] && ok "indeks ix_work_items_daily tersedia" \
+      || bad "indeks ix_work_items_daily tidak ditemukan (migrasi 00010?)"
+
+    # F18: sinkronisasi Google Spreadsheet (migrasi 00011).
+    SHEET_TABLES="$(q "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('sheet_sync_config','sheet_sync_queue')")"
+    [[ "${SHEET_TABLES:-0}" -eq 2 ]] && ok "tabel sinkronisasi spreadsheet tersedia" \
+      || bad "tabel sheet_sync tidak lengkap (ditemukan ${SHEET_TABLES:-0}/2; migrasi 00011?)"
+
+    SHEET_CFG="$(q "SELECT count(*) FROM sheet_sync_config")"
+    [[ "${SHEET_CFG:-0}" -eq 1 ]] && ok "baris konfigurasi sheet_sync_config ada (tunggal)" \
+      || bad "baris sheet_sync_config = ${SHEET_CFG:-0} (ingin tepat 1)"
+
+    # F19: jejak pengubah + keterangan penyelesaian (migrasi 00012).
+    UPD_COL="$(q "SELECT count(*) FROM information_schema.columns WHERE table_name='work_items' AND column_name='updated_by_username'")"
+    [[ "${UPD_COL:-0}" -eq 1 ]] && ok "kolom work_items.updated_by_username tersedia" \
+      || bad "kolom updated_by_username tidak ada (migrasi 00012?)"
+
+    NOTE_COL="$(q "SELECT count(*) FROM information_schema.columns WHERE table_name='task_details' AND column_name='completion_note'")"
+    [[ "${NOTE_COL:-0}" -eq 1 ]] && ok "kolom task_details.completion_note tersedia" \
+      || bad "kolom completion_note tidak ada (migrasi 00012?)"
+
+    # F20/F21: siklus SLA, collaborator, catatan penanganan.
+    TKT_TABLES="$(q "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('ticket_sla_cycles','ticket_collaborators')")"
+    [[ "${TKT_TABLES:-0}" -eq 2 ]] && ok "tabel ticket_sla_cycles & ticket_collaborators tersedia" \
+      || bad "tabel F20 tidak lengkap (${TKT_TABLES:-0}/2; migrasi 00014?)"
+
+    HANDLE_COLS="$(q "SELECT count(*) FROM information_schema.columns WHERE table_name='ticket_details' AND column_name IN ('issue_found','troubleshooting','action_solution')")"
+    [[ "${HANDLE_COLS:-0}" -eq 3 ]] && ok "kolom catatan penanganan tiket tersedia" \
+      || bad "kolom penanganan tiket = ${HANDLE_COLS:-0} (ingin 3; migrasi 00014?)"
+
+    SLA_POL="$(q "SELECT count(*) FROM sla_policies WHERE name LIKE 'SLA-INCIDENT-%'")"
+    [[ "${SLA_POL:-0}" -ge 4 ]] && ok "SLA policy per prioritas (insiden): $SLA_POL" \
+      || bad "SLA policy per prioritas = ${SLA_POL:-0} (ingin >= 4; migrasi 00014?)"
 
     # Provider WAHA dibuat otomatis dari konfigurasi environment.
     WAHA_PROV="$(q "SELECT count(*) FROM notification_providers WHERE kind='waha' AND is_active")"

@@ -187,7 +187,7 @@ func TestCreateWorkItemWithEvents(t *testing.T) {
 	}
 
 	// Bersihkan.
-	if err := store.SoftDeleteWorkItem(ctx, mustUUID(t, itemID)); err != nil {
+	if _, err := store.SoftDeleteWorkItem(ctx, mustUUID(t, itemID)); err != nil {
 		t.Fatalf("hapus work item: %v", err)
 	}
 }
@@ -218,17 +218,17 @@ func TestStatusTransitionRecorded(t *testing.T) {
 		}
 		itemID = wi.ID.String()
 
-		// Transisi sah: open -> in_progress
-		res := wf.EvaluateTransitions("open", "in_progress")
+		// Transisi sah sesuai workflow task saat ini: accepted -> on_progress.
+		res := wf.EvaluateTransitions("accepted", "on_progress")
 		if !res.Allowed {
 			return errTransition
 		}
-		if err := store.UpdateWorkItemFields(ctx, tx, wi.ID, map[string]any{"status": "in_progress"}); err != nil {
+		if err := store.UpdateWorkItemFields(ctx, tx, wi.ID, map[string]any{"status": "on_progress"}); err != nil {
 			return err
 		}
 		return workitems.AppendEvent(ctx, tx, workitems.EventInput{
 			WorkItemID: itemID, EventType: workitems.EventStatusChanged,
-			Actor: "integration-test", FromValue: "open", ToValue: "in_progress",
+			Actor: "integration-test", FromValue: "accepted", ToValue: "on_progress",
 		})
 	})
 	if err != nil {
@@ -239,16 +239,16 @@ func TestStatusTransitionRecorded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("baca work item: %v", err)
 	}
-	if item.Status != "in_progress" {
-		t.Errorf("status = %q, ingin in_progress", item.Status)
+	if item.Status != "on_progress" {
+		t.Errorf("status = %q, ingin on_progress", item.Status)
 	}
 
 	// Transisi tidak sah harus ditolak oleh workflow.
-	if wf.CanTransition("in_progress", "open") {
-		t.Error("transisi in_progress -> open seharusnya DITOLAK")
+	if wf.CanTransition("on_progress", "accepted") {
+		t.Error("transisi on_progress -> accepted seharusnya DITOLAK")
 	}
 
-	if err := store.SoftDeleteWorkItem(ctx, mustUUID(t, itemID)); err != nil {
+	if _, err := store.SoftDeleteWorkItem(ctx, mustUUID(t, itemID)); err != nil {
 		t.Fatalf("hapus work item: %v", err)
 	}
 }
@@ -316,7 +316,7 @@ func TestTagsJSONBRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buat work item bertags: %v", err)
 	}
-	t.Cleanup(func() { _ = store.SoftDeleteWorkItem(ctx, mustUUID(t, itemID)) })
+	t.Cleanup(func() { _, _ = store.SoftDeleteWorkItem(ctx, mustUUID(t, itemID)) })
 
 	got, err := store.GetWorkItem(ctx, mustUUID(t, itemID))
 	if err != nil {
@@ -520,7 +520,7 @@ func TestExtensionWritePath(t *testing.T) {
 			if err != nil {
 				t.Fatalf("transaksi: %v", err)
 			}
-			t.Cleanup(func() { _ = store.SoftDeleteWorkItem(ctx, mustUUID(t, itemID)) })
+			t.Cleanup(func() { _, _ = store.SoftDeleteWorkItem(ctx, mustUUID(t, itemID)) })
 
 			wi, err := store.GetWorkItem(ctx, mustUUID(t, itemID))
 			if err != nil {
@@ -544,4 +544,147 @@ func mustUUID(t *testing.T, s string) uuid.UUID {
 		t.Fatalf("uuid tidak valid %q: %v", s, err)
 	}
 	return parsed
+}
+
+// TestSheetSyncRequeueAfterSent memverifikasi temuan penting: setelah sebuah
+// item pernah tersinkron (status sent, op update), perubahan berikutnya WAJIB
+// mengembalikan entri ke pending agar ikut terkirim. Sebelum perbaikan, klausa
+// WHERE pada ON CONFLICT membuat perubahan setelah sent tidak pernah terkirim.
+func TestSheetSyncRequeueAfterSent(t *testing.T) {
+	store, ctx := setupStore(t)
+
+	// Buat work item nyata (antrean punya FK ke work_items).
+	var itemID uuid.UUID
+	if err := store.Tx(ctx, func(tx pgx.Tx) error {
+		ref, err := workitems.NextRefNo(ctx, tx, models.ItemTask, time.Now())
+		if err != nil {
+			return err
+		}
+		wi, err := store.CreateWorkItem(ctx, tx, repository.CreateWorkItemParams{
+			RefNo:     ref,
+			ItemType:  models.ItemTask,
+			Title:     "Uji sinkronisasi spreadsheet",
+			Priority:  "normal",
+			Status:    "accepted",
+			Source:    "test",
+			CreatedBy: "integration-test",
+		})
+		if err != nil {
+			return err
+		}
+		itemID = wi.ID
+		return nil
+	}); err != nil {
+		t.Fatalf("buat work item: %v", err)
+	}
+	t.Cleanup(func() { _, _ = store.SoftDeleteWorkItem(ctx, itemID) })
+	eventKey := "sheet:" + itemID.String()
+
+	base := repository.EnqueueSheetSyncParams{
+		WorkItemID: itemID,
+		EventKey:   eventKey,
+		RefNo:      "TSK-TEST-REQUEUE",
+		Op:         models.SheetOpAppend,
+		Action:     "create",
+		Payload:    map[string]any{"ref_no": "TSK-TEST-REQUEUE", "status": "accepted"},
+	}
+
+	// 1) Enqueue awal.
+	if _, err := store.EnqueueSheetSync(ctx, base); err != nil {
+		t.Fatalf("enqueue awal: %v", err)
+	}
+	rows, err := store.ClaimSheetSync(ctx, 10)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	var target *models.SheetSyncQueueRow
+	for i := range rows {
+		if rows[i].EventKey == eventKey {
+			target = &rows[i]
+		}
+	}
+	if target == nil {
+		t.Fatal("entri tidak ditemukan setelah enqueue")
+	}
+	if err := store.MarkSheetSyncSent(ctx, target.ID); err != nil {
+		t.Fatalf("mark sent: %v", err)
+	}
+
+	// 2) Perubahan setelah sent -> harus kembali pending dengan payload baru.
+	upd := base
+	upd.Op = models.SheetOpUpdate
+	upd.Action = "status_changed"
+	upd.Payload = map[string]any{"ref_no": "TSK-TEST-REQUEUE", "status": "closed"}
+	if _, err := store.EnqueueSheetSync(ctx, upd); err != nil {
+		t.Fatalf("enqueue setelah sent: %v", err)
+	}
+
+	var status, action, payloadStatus string
+	if err := store.Pool().QueryRow(ctx, `
+		SELECT status, action, payload_json->>'status'
+		FROM sheet_sync_queue WHERE event_key=$1`, eventKey,
+	).Scan(&status, &action, &payloadStatus); err != nil {
+		t.Fatalf("baca entri: %v", err)
+	}
+	if status != models.SheetSyncPending {
+		t.Errorf("status = %q, want pending (perubahan setelah sent tidak diantre ulang)", status)
+	}
+	if action != "status_changed" {
+		t.Errorf("action = %q, want status_changed", action)
+	}
+	if payloadStatus != "closed" {
+		t.Errorf("payload status = %q, want closed", payloadStatus)
+	}
+}
+
+// TestUpdatedByAndCompletionNote memverifikasi jejak pengubah terakhir dan
+// keterangan penyelesaian Daily Task tersimpan serta terbaca kembali.
+func TestUpdatedByAndCompletionNote(t *testing.T) {
+	store, ctx := setupStore(t)
+
+	var itemID uuid.UUID
+	if err := store.Tx(ctx, func(tx pgx.Tx) error {
+		ref, err := workitems.NextRefNo(ctx, tx, models.ItemDailyTask, time.Now())
+		if err != nil {
+			return err
+		}
+		wi, err := store.CreateWorkItem(ctx, tx, repository.CreateWorkItemParams{
+			RefNo:     ref,
+			ItemType:  models.ItemDailyTask,
+			Title:     "Uji daily task",
+			Priority:  "normal",
+			Status:    "pending",
+			Source:    "test",
+			CreatedBy: "creatorA",
+		})
+		if err != nil {
+			return err
+		}
+		itemID = wi.ID
+		// Simpan keterangan penyelesaian.
+		if err := store.SetTaskCompletionNote(ctx, tx, wi.ID, "Selesai, clear"); err != nil {
+			return err
+		}
+		return store.UpdateWorkItemFields(ctx, tx, wi.ID, map[string]any{
+			"status":              "done",
+			"updated_by_username": "operatorB",
+		})
+	}); err != nil {
+		t.Fatalf("transaksi: %v", err)
+	}
+	t.Cleanup(func() { _, _ = store.SoftDeleteWorkItem(ctx, itemID) })
+
+	got, err := store.GetWorkItem(ctx, itemID)
+	if err != nil {
+		t.Fatalf("baca item: %v", err)
+	}
+	if got.UpdatedByUsername != "operatorB" {
+		t.Errorf("updated_by = %q, want operatorB", got.UpdatedByUsername)
+	}
+	if got.Task == nil {
+		t.Fatal("task details tidak dimuat untuk daily_task")
+	}
+	if got.Task.CompletionNote != "Selesai, clear" {
+		t.Errorf("completion_note = %q, want 'Selesai, clear'", got.Task.CompletionNote)
+	}
 }

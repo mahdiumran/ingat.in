@@ -9,14 +9,36 @@ import (
 )
 
 // Role user.
+//
+// Role kini dinamis (tabel `roles`); konstanta di bawah adalah peran bawaan
+// yang punya perlakuan khusus di kode. Peran lain dapat dibuat dari panel.
 const (
-	RoleAdmin    = "admin"
+	RoleAdmin    = "admin"   // super user — selalu seluruh izin
+	RoleManager  = "manager" // manajerial (admin di bawah super user)
+	RoleSPV      = "spv"     // supervisor operasional
+	RoleOwner    = "owner"   // pemilik/pimpinan
 	RoleAgent    = "agent"
 	RoleNOC      = "noc"
 	RoleSales    = "sales"
 	RoleViewer   = "viewer"
 	RoleCustomer = "customer"
 )
+
+// DefaultRoleSet adalah peran manajerial yang boleh melihat KPI/SLA.
+// Selaras dengan permission action "kpi.view" (admin selalu boleh).
+var DefaultRoleSet = []string{RoleAdmin, RoleManager, RoleSPV, RoleOwner, RoleNOC, RoleAgent, RoleSales, RoleViewer, RoleCustomer}
+
+// Role adalah satu peran dinamis (tabel roles).
+type Role struct {
+	Role        string    `json:"role"`
+	Label       string    `json:"label"`
+	Description string    `json:"description"`
+	IsSuper     bool      `json:"is_super"`
+	IsSystem    bool      `json:"is_system"`
+	Rank        int       `json:"rank"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
 
 // ItemType work item. Menentukan extension yang dipakai.
 const (
@@ -122,9 +144,12 @@ type Team struct {
 	ID          uuid.UUID `json:"id"`
 	Name        string    `json:"name"`
 	Description string    `json:"description"`
-	IsActive    bool      `json:"is_active"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	Category    string    `json:"category"`
+	// F25: target notifikasi default tim (resolusi target item tanpa target).
+	TargetID  *uuid.UUID `json:"target_id,omitempty"`
+	IsActive  bool       `json:"is_active"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
 }
 
 // User adalah akun panel.
@@ -297,16 +322,32 @@ type WorkItem struct {
 	CustomerRef string   `json:"customer_ref"`
 	Tags        []string `json:"tags"`
 
-	IsDeleted bool      `json:"is_deleted"`
-	CreatedBy string    `json:"created_by"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	IsDeleted         bool      `json:"is_deleted"`
+	CreatedBy         string    `json:"created_by"`
+	UpdatedByUsername string    `json:"updated_by_username"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+
+	// F27: turunan waktu penyelesaian & aktornya (tidak disimpan di kolom).
+	// CompletedAt = resolved_at (fallback closed_at).
+	// CompletedBy = actor event status-final (fallback updated_by_username).
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	CompletedBy string     `json:"completed_by,omitempty"`
 
 	// Extension (hanya diisi sesuai item_type)
 	Task     *TaskDetails     `json:"task,omitempty"`
 	Reminder *ReminderDetails `json:"reminder,omitempty"`
 	RFS      *RFSDetails      `json:"rfs,omitempty"`
 	Ticket   *TicketDetails   `json:"ticket,omitempty"`
+
+	// F20: penangan tambahan (diisi saat detail dimuat).
+	Collaborators []Collaborator `json:"collaborators,omitempty"`
+	// F20: siklus SLA tiket (diisi saat detail dimuat).
+	SLACycles   []SLACycle `json:"sla_cycles,omitempty"`
+	ReopenCount int        `json:"reopen_count"`
+
+	// F25: data teknis aktivasi RFS (diisi saat detail dimuat, item_type=rfs).
+	Activation *RFSActivationData `json:"activation,omitempty"`
 
 	// SLA turunan (dihitung saat serialisasi, tidak disimpan di kolom khusus).
 	// SLAStartAt = first_response_at (status pertama bukan state awal).
@@ -363,7 +404,22 @@ type TaskDetails struct {
 	Checklist       []ChecklistItem `json:"checklist"`
 	ProgressPct     int             `json:"progress_pct"`
 	EstimateMinutes *int            `json:"estimate_minutes,omitempty"`
+	// CompletionNote diisi operator saat menandai Daily Task "Selesai".
+	CompletionNote string `json:"completion_note,omitempty"`
+	// F24: DailyTaskType adalah kode jenis daily task (master data
+	// kind `daily_task_type`). Kosong untuk item_type='task' biasa.
+	DailyTaskType string `json:"daily_task_type,omitempty"`
+	// F24: ResultStatus adalah hasil penyelesaian daily task:
+	// "" (belum ditandai), "normal", atau "bermasalah" (memicu tiket).
+	ResultStatus string `json:"result_status,omitempty"`
 }
+
+// F24 — Hasil penyelesaian Daily Task.
+const (
+	DailyResultNormal      = "normal"
+	DailyResultBermasalah  = "bermasalah"
+	DailyTicketLinkKindStr = "daily_ticket"
+)
 
 // ChecklistItem adalah satu butir checklist pada task.
 type ChecklistItem struct {
@@ -392,9 +448,28 @@ type RFSDetails struct {
 	Bandwidth      string    `json:"bandwidth"`
 	PicNOC         string    `json:"pic_noc"`
 	PicSales       string    `json:"pic_sales"`
-	SalesUsername  string    `json:"sales_username"`
-	Site           string    `json:"site"`
-	InstallStage   string    `json:"install_stage"`
+	// F25: PIC berupa tim (menggantikan input bebas pic_noc).
+	PicTeamID     *uuid.UUID `json:"pic_team_id,omitempty"`
+	SalesUsername string     `json:"sales_username"`
+	Site          string     `json:"site"`
+	InstallStage  string     `json:"install_stage"`
+	// F23: catatan penanganan (modal Troubleshoot pada Aktivasi/EWO).
+	IssueFound      string `json:"issue_found"`
+	Troubleshooting string `json:"troubleshooting"`
+	ActionSolution  string `json:"action_solution"`
+}
+
+// RFSActivationData (F25) menyimpan data teknis aktivasi RFS (1:1 work_items).
+type RFSActivationData struct {
+	WorkItemID    uuid.UUID `json:"work_item_id"`
+	IPAddress     string    `json:"ip_address"`
+	VLanDetail    string    `json:"vlan_detail"`
+	InterfacePort string    `json:"interface_port"`
+	BandwidthTest string    `json:"bandwidth_test"`
+	PingTest      string    `json:"ping_test"`
+	PacketLoss    string    `json:"packet_loss"`
+	UpdatedBy     string    `json:"updated_by"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // TicketDetails adalah extension untuk item_type = incident | request | change.
@@ -409,6 +484,36 @@ type TicketDetails struct {
 	AssignmentGroup string    `json:"assignment_group"`
 	EscalationLevel int       `json:"escalation_level"`
 	ReopenCount     int       `json:"reopen_count"`
+	// Catatan penanganan (F21).
+	IssueFound      string `json:"issue_found"`
+	Troubleshooting string `json:"troubleshooting"`
+	ActionSolution  string `json:"action_solution"`
+}
+
+// SLACycle adalah satu siklus SLA tiket (F20).
+//
+// Siklus 0 = pekerjaan awal sejak tiket dibuat; 1.. = setiap reopen.
+// Riwayat siklus tidak pernah dihapus.
+type SLACycle struct {
+	ID              uuid.UUID  `json:"id"`
+	WorkItemID      uuid.UUID  `json:"work_item_id"`
+	CycleNo         int        `json:"cycle_no"`
+	OpenedAt        time.Time  `json:"opened_at"`
+	ReopenedAt      *time.Time `json:"reopened_at,omitempty"`
+	ClosedAt        *time.Time `json:"closed_at,omitempty"`
+	FirstResponseAt *time.Time `json:"first_response_at,omitempty"`
+	HandlerUsername string     `json:"handler_username"`
+	ClosedBy        string     `json:"closed_by"`
+	CreatedAt       time.Time  `json:"created_at"`
+}
+
+// Collaborator adalah NOC yang "ikut menangani" sebuah tiket (F20).
+type Collaborator struct {
+	ID         uuid.UUID `json:"id"`
+	WorkItemID uuid.UUID `json:"work_item_id"`
+	Username   string    `json:"username"`
+	AddedBy    string    `json:"added_by"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // WorkItemEvent adalah catatan aktivitas append-only.
@@ -422,6 +527,38 @@ type WorkItemEvent struct {
 	Detail        map[string]any `json:"detail"`
 	CreatedAt     time.Time      `json:"created_at"`
 }
+
+// Note (F26) adalah catatan mandiri (sticky note) dengan tim pemilik + berbagi.
+type Note struct {
+	ID                uuid.UUID  `json:"id"`
+	Title             string     `json:"title"`
+	Body              string     `json:"body"`
+	Visibility        string     `json:"visibility"` // internal | eksternal
+	OwnerTeamID       *uuid.UUID `json:"owner_team_id,omitempty"`
+	OwnerTeamName     string     `json:"owner_team_name,omitempty"`
+	Color             string     `json:"color"`
+	Pinned            bool       `json:"pinned"`
+	CreatedBy         string     `json:"created_by"`
+	UpdatedByUsername string     `json:"updated_by_username"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
+	// SharedTeamIDs adalah tim yang boleh melihat catatan ini (diisi saat dimuat).
+	SharedTeamIDs []uuid.UUID `json:"shared_team_ids,omitempty"`
+	// SharedTeams menyertakan nama tim (untuk tampilan).
+	SharedTeams []NoteSharedTeam `json:"shared_teams,omitempty"`
+}
+
+// NoteSharedTeam adalah ringkasan tim yang di-share ke sebuah catatan.
+type NoteSharedTeam struct {
+	TeamID uuid.UUID `json:"team_id"`
+	Name   string    `json:"name"`
+}
+
+// Visibilitas catatan (F26).
+const (
+	NoteVisibilityInternal  = "internal"
+	NoteVisibilityEksternal = "eksternal"
+)
 
 // Comment adalah komentar/diskusi pada work item.
 type Comment struct {
@@ -470,6 +607,62 @@ type NotificationOutbox struct {
 	SentAt            *time.Time     `json:"sent_at,omitempty"`
 	CreatedAt         time.Time      `json:"created_at"`
 	UpdatedAt         time.Time      `json:"updated_at"`
+}
+
+/* ---------------------------------------------------------------------------
+   Google Sheets sync (F18)
+   --------------------------------------------------------------------------- */
+
+// Status antrean sinkronisasi spreadsheet.
+const (
+	SheetSyncPending = "pending"
+	SheetSyncSending = "sending"
+	SheetSyncSent    = "sent"
+	SheetSyncFailed  = "failed"
+)
+
+// Operasi sinkronisasi spreadsheet.
+const (
+	SheetOpAppend = "append" // item baru → tambah baris
+	SheetOpUpdate = "update" // item berubah → perbarui baris yang sama (by Ref)
+)
+
+// SheetSyncConfig adalah konfigurasi sinkronisasi (satu baris di database).
+//
+// ServiceAccountEnc tidak pernah dikembalikan utuh ke klien; API hanya
+// mengembalikan ServiceAccountSet dan ClientEmail.
+type SheetSyncConfig struct {
+	ID                uuid.UUID  `json:"id"`
+	Enabled           bool       `json:"enabled"`
+	SpreadsheetID     string     `json:"spreadsheet_id"`
+	SheetName         string     `json:"sheet_name"`
+	ServiceAccountEnc string     `json:"-"`
+	ServiceAccountSet bool       `json:"service_account_set"`
+	ClientEmail       string     `json:"client_email"`
+	HeaderWritten     bool       `json:"header_written"`
+	LastSyncAt        *time.Time `json:"last_sync_at,omitempty"`
+	LastError         string     `json:"last_error"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
+}
+
+// SheetSyncQueueRow adalah satu baris antrean sinkronisasi spreadsheet.
+type SheetSyncQueueRow struct {
+	ID            int64          `json:"id"`
+	WorkItemID    uuid.UUID      `json:"work_item_id"`
+	EventKey      string         `json:"event_key"`
+	RefNo         string         `json:"ref_no"`
+	Op            string         `json:"op"`
+	Action        string         `json:"action"`
+	Payload       map[string]any `json:"payload"`
+	Status        string         `json:"status"`
+	Attempts      int            `json:"attempts"`
+	MaxAttempts   int            `json:"max_attempts"`
+	NextAttemptAt time.Time      `json:"next_attempt_at"`
+	LastError     string         `json:"last_error"`
+	SentAt        *time.Time     `json:"sent_at,omitempty"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
 }
 
 // AuditLog adalah catatan aksi user.
@@ -527,6 +720,12 @@ const (
 	// KindCustomer menyimpan pelanggan; kode dibuat otomatis CUST-<tahun>-<urut>
 	// dan atribut (jenis, PIC, telepon, surel, alamat, kapasitas) ada di meta.
 	KindCustomer = "customer"
+	// KindDailyTaskType (F24) menyimpan jenis Daily Task; meta `dapat_membuat_tiket`.
+	KindDailyTaskType = "daily_task_type"
+	// KindTelegramChat (F12) menyimpan allowlist grup bot Telegram; code = chat_id.
+	// meta opsional mengatur izin per-command (allow_open, allow_ticket, dst.);
+	// bila tidak ada, seluruh command dianggap diizinkan.
+	KindTelegramChat = "telegram_chat"
 )
 
 // Jenis customer pada meta_json.

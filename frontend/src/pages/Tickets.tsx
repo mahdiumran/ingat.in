@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ApiUser, masterDataApi, notificationApi, Target, WorkItem, workItemsApi } from '../api'
+import { ApiUser, masterDataApi, notificationApi, WorkItem, workItemsApi } from '../api'
 import {
   ConfirmDialog,
   EmptyState,
@@ -339,6 +339,14 @@ export default function Tickets({
                       <button className="mono text-label-md text-primary hover:underline" onClick={() => setDetailID(it.id)}>
                         {it.ref_no}
                       </button>
+                      {(it.reopen_count ?? 0) > 0 && (
+                        <span
+                          className="ml-1.5 rounded-full bg-warning-container px-1.5 py-0.5 text-[10px] font-bold text-on-warning-container"
+                          title={`Dibuka kembali ${it.reopen_count}×`}
+                        >
+                          reopen {it.reopen_count}
+                        </span>
+                      )}
                     </td>
                     <td className="max-w-[280px]">
                       <button className="block truncate text-left font-medium hover:underline" onClick={() => setDetailID(it.id)}>
@@ -476,7 +484,7 @@ function TicketForm({
   onError: (msg: string) => void
 }) {
   const isEdit = !!entry
-  const targets = useAsync(() => notificationApi.targets(), [])
+  const targets = useAsync(() => notificationApi.targetOptions(), [])
   // Kategori & subkategori dari Master Data (hierarki parent_id).
   const categories = useAsync(() => masterDataApi.list({ kind: 'ticket_category' }), [])
   const incidentTypes = useAsync(() => masterDataApi.list({ kind: 'incident_type' }), [])
@@ -702,7 +710,7 @@ function TicketForm({
             </label>
             <select id="tf-target" className="input" value={targetId} onChange={(e) => setTargetId(e.target.value)}>
               <option value="">— Default sistem —</option>
-              {((targets.data?.targets ?? []) as Target[]).map((t) => (
+              {(targets.data?.targets ?? []).map((t) => (
                 <option key={t.id} value={t.id}>
                   {t.name}
                 </option>

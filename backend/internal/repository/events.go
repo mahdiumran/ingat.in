@@ -2,6 +2,8 @@ package repository
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -197,6 +199,14 @@ type UpdateRFSDetailsParams struct {
 	PicSales       *string
 	Site           *string
 	InstallStage   *string
+	// F23: catatan penanganan (modal Troubleshoot).
+	IssueFound      *string
+	Troubleshooting *string
+	ActionSolution  *string
+	// F25: PIC team. SetPicTeam + PicTeamID memakai pola set-flag agar dapat
+	// dikosongkan (NULL).
+	PicTeamID  *uuid.UUID
+	SetPicTeam bool
 }
 
 // UpdateRFSDetails memperbarui rfs_details.
@@ -209,10 +219,16 @@ func (s *Store) UpdateRFSDetails(ctx context.Context, tx pgx.Tx, workItemID uuid
 			pic_noc         = COALESCE($5, pic_noc),
 			pic_sales       = COALESCE($6, pic_sales),
 			site            = COALESCE($7, site),
-			install_stage   = COALESCE($8, install_stage)
+			install_stage   = COALESCE($8, install_stage),
+			issue_found     = COALESCE($9, issue_found),
+			troubleshooting = COALESCE($10, troubleshooting),
+			action_solution = COALESCE($11, action_solution),
+			pic_team_id     = CASE WHEN $13::boolean THEN $12 ELSE pic_team_id END
 		WHERE work_item_id = $1`,
 		workItemID, p.CustomerName, p.ServicePackage, p.Bandwidth,
-		p.PicNOC, p.PicSales, p.Site, p.InstallStage)
+		p.PicNOC, p.PicSales, p.Site, p.InstallStage,
+		p.IssueFound, p.Troubleshooting, p.ActionSolution,
+		p.PicTeamID, p.SetPicTeam)
 	return err
 }
 
@@ -234,6 +250,10 @@ type UpdateTicketDetailsParams struct {
 	Impact          *string
 	Urgency         *string
 	AssignmentGroup *string
+	// Catatan penanganan (F21).
+	IssueFound      *string
+	Troubleshooting *string
+	ActionSolution  *string
 }
 
 // UpdateTicketDetails memperbarui ticket_details (dipakai mulai F10).
@@ -245,9 +265,13 @@ func (s *Store) UpdateTicketDetails(ctx context.Context, tx pgx.Tx, workItemID u
 			incident_type    = COALESCE($4, incident_type),
 			impact           = COALESCE($5, impact),
 			urgency          = COALESCE($6, urgency),
-			assignment_group = COALESCE($7, assignment_group)
+			assignment_group = COALESCE($7, assignment_group),
+			issue_found      = COALESCE($8, issue_found),
+			troubleshooting  = COALESCE($9, troubleshooting),
+			action_solution  = COALESCE($10, action_solution)
 		WHERE work_item_id = $1`,
-		workItemID, p.Category, p.Subcategory, p.IncidentType, p.Impact, p.Urgency, p.AssignmentGroup)
+		workItemID, p.Category, p.Subcategory, p.IncidentType, p.Impact, p.Urgency, p.AssignmentGroup,
+		p.IssueFound, p.Troubleshooting, p.ActionSolution)
 	return err
 }
 
@@ -300,11 +324,41 @@ type DashboardSummary struct {
 	Upcoming []models.WorkItem `json:"upcoming"`
 }
 
+// DashboardScope (F31) membatasi baris task & daily_task sesuai tim/pemilik.
+// Nil scope berarti tanpa pembatasan (admin).
+type DashboardScope struct {
+	TeamID   *uuid.UUID
+	Username string
+}
+
+// scopeClause menghasilkan klausa SQL yang HANYA membatasi task/daily_task ke
+// scope, sementara tipe lain (rfs/tiket/reminder) tetap tanpa filter (Y).
+// Mengembalikan string kosong bila scope nil.
+func (sc *DashboardScope) clause(arg func(any) string) string {
+	if sc == nil {
+		return ""
+	}
+	var inner string
+	if sc.TeamID != nil {
+		inner = "team_id = " + arg(*sc.TeamID)
+	} else if strings.TrimSpace(sc.Username) != "" {
+		u := strings.ToLower(strings.TrimSpace(sc.Username))
+		inner = "(team_id IS NULL AND (lower(created_by) = " + arg(u) +
+			" OR lower(owner_username) = " + arg(u) + "))"
+	} else {
+		return ""
+	}
+	return " AND (item_type NOT IN ('task','daily_task') OR (" + inner + "))"
+}
+
 // DashboardSummary menghitung ringkasan operasional.
-func (s *Store) DashboardSummary(ctx context.Context) (*DashboardSummary, error) {
+//
+// scope (F31), bila tidak nil, membatasi baris task & daily_task ke tim/pemilik
+// pengguna; tipe lain tetap global.
+func (s *Store) DashboardSummary(ctx context.Context, scope *DashboardScope) (*DashboardSummary, error) {
 	out := &DashboardSummary{}
 
-	byTypeStatus, err := s.CountWorkItemsByTypeStatus(ctx)
+	byTypeStatus, err := s.CountWorkItemsByTypeStatus(ctx, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -322,6 +376,14 @@ func (s *Store) DashboardSummary(ctx context.Context) (*DashboardSummary, error)
 		}
 	}
 
+	// Argumen terpisah per query (placeholder dihitung ulang tiap query).
+	args := []any{}
+	arg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	scopeSQL := scope.clause(arg)
+
 	row := s.pool.QueryRow(ctx, `
 		SELECT
 		  count(*) FILTER (WHERE due_at IS NOT NULL AND due_at < now()
@@ -338,7 +400,7 @@ func (s *Store) DashboardSummary(ctx context.Context) (*DashboardSummary, error)
 		                     AND expire_at IS NOT NULL AND expire_at > now()
 		                     AND expire_at <= now() + interval '7 days'
 		                     AND status NOT IN ('activated','cancelled'))                                                   AS rfs_upcoming
-		FROM work_items WHERE NOT is_deleted`)
+		FROM work_items WHERE NOT is_deleted`+scopeSQL, args...)
 	if err := row.Scan(&out.OverdueTotal, &out.DueTodayTotal, &out.ExpiringSoon,
 		&out.ExpiredTotal, &out.RFSUpcoming); err != nil {
 		return nil, err
@@ -354,13 +416,19 @@ func (s *Store) DashboardSummary(ctx context.Context) (*DashboardSummary, error)
 	}
 
 	// 7 item terdekat yang perlu perhatian.
+	args2 := []any{}
+	arg2 := func(v any) string {
+		args2 = append(args2, v)
+		return fmt.Sprintf("$%d", len(args2))
+	}
+	scopeSQL2 := scope.clause(arg2)
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+workItemColumns+` FROM work_items
 		WHERE NOT is_deleted
 		  AND status NOT IN ('done','cancelled','closed','activated','expired','fulfilled')
-		  AND (due_at IS NOT NULL OR expire_at IS NOT NULL)
+		  AND (due_at IS NOT NULL OR expire_at IS NOT NULL)`+scopeSQL2+`
 		ORDER BY LEAST(COALESCE(due_at, 'infinity'::timestamptz), COALESCE(expire_at, 'infinity'::timestamptz))
-		LIMIT 7`)
+		LIMIT 7`, args2...)
 	if err != nil {
 		return nil, err
 	}

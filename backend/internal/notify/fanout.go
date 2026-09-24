@@ -54,7 +54,12 @@ func (f *Fanout) runReminders(ctx context.Context) error {
 
 	now := time.Now().UTC()
 	for _, item := range items {
-		if item.TargetID == nil || item.ExpireAt == nil {
+		if item.ExpireAt == nil {
+			continue
+		}
+		// F25: resolusi target: item → tim → default.
+		targetID, terr := f.store.ResolveItemTargetID(ctx, &item)
+		if terr != nil || targetID == nil {
 			continue
 		}
 
@@ -116,7 +121,7 @@ func (f *Fanout) runReminders(ctx context.Context) error {
 				TemplateKey: tplKey,
 				OffsetLabel: label,
 				Severity:    severity,
-				TargetID:    *item.TargetID,
+				TargetID:    *targetID,
 				Payload:     payload,
 			})
 			if err != nil {
@@ -203,7 +208,12 @@ func (f *Fanout) runRFS(ctx context.Context) error {
 	}
 
 	for _, item := range items {
-		if item.TargetID == nil || item.ExpireAt == nil {
+		if item.ExpireAt == nil {
+			continue
+		}
+		// F25: resolusi target: item → tim PIC RFS → default.
+		targetID, terr := f.store.ResolveItemTargetID(ctx, &item)
+		if terr != nil || targetID == nil {
 			continue
 		}
 
@@ -242,7 +252,7 @@ func (f *Fanout) runRFS(ctx context.Context) error {
 				TemplateKey: tplKey,
 				OffsetLabel: label,
 				Severity:    severity,
-				TargetID:    *item.TargetID,
+				TargetID:    *targetID,
 				Payload:     payload,
 			})
 			if err != nil {

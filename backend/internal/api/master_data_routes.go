@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -51,6 +52,19 @@ type rolePermissionRequest struct {
 	Role    string `json:"role"`
 	Action  string `json:"action"`
 	Allowed bool   `json:"allowed"`
+}
+
+// PermissionActions adalah daftar aksi (verb) yang dapat diatur pada matriks
+// izin. Bernama "<entities>.<verb>" untuk memudahkan pemetaan di UI.
+var PermissionActions = []string{
+	"items.write",
+	"providers.view",
+	"providers.write",
+	"masterdata.write",
+	"users.write",
+	"teams.write",
+	"roles.write",
+	"kpi.view",
 }
 
 /* ---------------------------------------------------------------------------
@@ -317,10 +331,25 @@ func (s *Server) handleListRolePermissions(w http.ResponseWriter, r *http.Reques
 		writeInternalError(w, err)
 		return
 	}
+	roles, err := s.store.ListRoles(r.Context())
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	names := make([]string, 0, len(roles))
+	labels := map[string]string{}
+	super := map[string]bool{}
+	for _, rr := range roles {
+		names = append(names, rr.Role)
+		labels[rr.Role] = rr.Label
+		super[rr.Role] = rr.IsSuper
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"permissions": perms,
-		"roles":       []string{models.RoleAdmin, models.RoleNOC, models.RoleAgent, models.RoleSales, models.RoleViewer},
-		"actions":     []string{"items.write", "providers.write", "masterdata.write", "users.write"},
+		"permissions":   perms,
+		"roles":         names,
+		"role_labels":   labels,
+		"role_is_super": super,
+		"actions":       PermissionActions,
 	})
 }
 
@@ -332,7 +361,7 @@ func (s *Server) handleSetRolePermission(w http.ResponseWriter, r *http.Request)
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if !isKnownRole(req.Role) {
+	if !s.isKnownRole(r.Context(), req.Role) {
 		writeErr(w, http.StatusBadRequest, "role tidak dikenal")
 		return
 	}
@@ -340,9 +369,9 @@ func (s *Server) handleSetRolePermission(w http.ResponseWriter, r *http.Request)
 		writeErr(w, http.StatusBadRequest, "action wajib diisi")
 		return
 	}
-	// Admin tidak dapat dikunci dari panel (lihat PermissionAllowed).
-	if req.Role == models.RoleAdmin && !req.Allowed {
-		writeErr(w, http.StatusBadRequest, "izin admin tidak dapat dicabut")
+	// Super user tidak dapat dikunci dari panel (lihat PermissionAllowed).
+	if s.store.RoleIsSuper(r.Context(), req.Role) && !req.Allowed {
+		writeErr(w, http.StatusBadRequest, "izin super user tidak dapat dicabut")
 		return
 	}
 
@@ -370,13 +399,12 @@ func (s *Server) masterDataID(w http.ResponseWriter, r *http.Request) (uuid.UUID
 	return id, true
 }
 
-func isKnownRole(role string) bool {
-	switch role {
-	case models.RoleAdmin, models.RoleAgent, models.RoleNOC, models.RoleSales, models.RoleViewer, models.RoleCustomer:
-		return true
-	default:
+// isKnownRole melaporkan apakah role terdaftar (dinamis dari tabel roles).
+func (s *Server) isKnownRole(ctx context.Context, role string) bool {
+	if role == "" {
 		return false
 	}
+	return s.store.RoleNameSet(ctx)[role]
 }
 
 // isValidKindSlug membatasi kind pada huruf kecil, angka, dan underscore agar

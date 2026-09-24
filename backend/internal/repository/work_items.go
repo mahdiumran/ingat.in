@@ -23,7 +23,7 @@ const workItemColumns = `
 	sla_policy_id, sla_state, sla_breached_at, first_response_at, resolved_at,
 	closed_at, paused_total_seconds,
 	device_ref, service_ref, customer_ref, tags,
-	is_deleted, created_by, created_at, updated_at`
+	is_deleted, created_by, updated_by_username, created_at, updated_at`
 
 func scanWorkItem(row pgx.Row) (*models.WorkItem, error) {
 	wi := &models.WorkItem{}
@@ -36,7 +36,7 @@ func scanWorkItem(row pgx.Row) (*models.WorkItem, error) {
 		&wi.SLAPolicyID, &wi.SLAState, &wi.SLABreachedAt, &wi.FirstResponseAt,
 		&wi.ResolvedAt, &wi.ClosedAt, &wi.PausedTotalSeconds,
 		&wi.DeviceRef, &wi.ServiceRef, &wi.CustomerRef, &wi.Tags,
-		&wi.IsDeleted, &wi.CreatedBy, &wi.CreatedAt, &wi.UpdatedAt,
+		&wi.IsDeleted, &wi.CreatedBy, &wi.UpdatedByUsername, &wi.CreatedAt, &wi.UpdatedAt,
 	)
 	if err != nil {
 		return nil, mapErr(err)
@@ -93,12 +93,12 @@ func (s *Store) CreateWorkItem(ctx context.Context, tx pgx.Tx, p CreateWorkItemP
 			ref_no, item_type, title, description, priority, status, stage,
 			owner_username, requester_username, team_id, organization_id, target_id,
 			source, parent_id, start_at, due_at, expire_at,
-			device_ref, service_ref, customer_ref, tags, created_by
+			device_ref, service_ref, customer_ref, tags, created_by, updated_by_username
 		) VALUES (
 			$1,$2,$3,$4,$5,$6,$7,
 			$8,$9,$10,$11,$12,
 			$13,$14,$15,$16,$17,
-			$18,$19,$20,$21,$22
+			$18,$19,$20,$21,$22,$22
 		)
 		RETURNING `+workItemColumns,
 		p.RefNo, p.ItemType, p.Title, p.Description, p.Priority, p.Status, p.Stage,
@@ -138,12 +138,14 @@ func (s *Store) GetWorkItemByRef(ctx context.Context, refNo string) (*models.Wor
 // loadExtensions mengisi extension sesuai item_type.
 func (s *Store) loadExtensions(ctx context.Context, wi *models.WorkItem) error {
 	switch wi.ItemType {
-	case models.ItemTask:
+	case models.ItemTask, models.ItemDailyTask:
 		d := &models.TaskDetails{WorkItemID: wi.ID}
 		err := s.pool.QueryRow(ctx, `
-			SELECT checklist_json, progress_pct, estimate_minutes
+			SELECT checklist_json, progress_pct, estimate_minutes, completion_note,
+			       daily_task_type, result_status
 			FROM task_details WHERE work_item_id=$1`, wi.ID,
-		).Scan(&d.Checklist, &d.ProgressPct, &d.EstimateMinutes)
+		).Scan(&d.Checklist, &d.ProgressPct, &d.EstimateMinutes, &d.CompletionNote,
+			&d.DailyTaskType, &d.ResultStatus)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
@@ -168,10 +170,32 @@ func (s *Store) loadExtensions(ctx context.Context, wi *models.WorkItem) error {
 		d := &models.RFSDetails{WorkItemID: wi.ID}
 		err := s.pool.QueryRow(ctx, `
 			SELECT customer_name, service_id, service_package, bandwidth,
-			       pic_noc, pic_sales, sales_username, site, install_stage
+			       pic_noc, pic_sales, pic_team_id, sales_username, site, install_stage,
+			       issue_found, troubleshooting, action_solution
 			FROM rfs_details WHERE work_item_id=$1`, wi.ID,
 		).Scan(&d.CustomerName, &d.ServiceID, &d.ServicePackage, &d.Bandwidth,
-			&d.PicNOC, &d.PicSales, &d.SalesUsername, &d.Site, &d.InstallStage)
+			&d.PicNOC, &d.PicSales, &d.PicTeamID, &d.SalesUsername, &d.Site, &d.InstallStage,
+			&d.IssueFound, &d.Troubleshooting, &d.ActionSolution)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		if err == nil {
+			wi.RFS = d
+		}
+		// F25: data teknis aktivasi (opsional, baris dibuat saat pertama disimpan).
+		act := &models.RFSActivationData{WorkItemID: wi.ID}
+		aerr := s.pool.QueryRow(ctx, `
+			SELECT ip_address, vlan_detail, interface_port,
+			       bandwidth_test, ping_test, packet_loss, updated_by, updated_at
+			FROM rfs_activation_data WHERE work_item_id=$1`, wi.ID,
+		).Scan(&act.IPAddress, &act.VLanDetail, &act.InterfacePort,
+			&act.BandwidthTest, &act.PingTest, &act.PacketLoss, &act.UpdatedBy, &act.UpdatedAt)
+		if aerr != nil && !errors.Is(aerr, pgx.ErrNoRows) {
+			return aerr
+		}
+		if aerr == nil {
+			wi.Activation = act
+		}
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
@@ -182,18 +206,62 @@ func (s *Store) loadExtensions(ctx context.Context, wi *models.WorkItem) error {
 		d := &models.TicketDetails{WorkItemID: wi.ID}
 		err := s.pool.QueryRow(ctx, `
 			SELECT category, subcategory, incident_type, impact, urgency,
-			       assignment_group, escalation_level, reopen_count
+			       assignment_group, escalation_level, reopen_count,
+			       issue_found, troubleshooting, action_solution
 			FROM ticket_details WHERE work_item_id=$1`, wi.ID,
 		).Scan(&d.Category, &d.Subcategory, &d.IncidentType, &d.Impact, &d.Urgency,
-			&d.AssignmentGroup, &d.EscalationLevel, &d.ReopenCount)
+			&d.AssignmentGroup, &d.EscalationLevel, &d.ReopenCount,
+			&d.IssueFound, &d.Troubleshooting, &d.ActionSolution)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
 		if err == nil {
 			wi.Ticket = d
+			wi.ReopenCount = d.ReopenCount
 		}
 	}
+	// F20: penangan tambahan + siklus SLA (hanya untuk tiket).
+	if wi.IsTicket() {
+		if cols, err := s.ListCollaborators(ctx, wi.ID); err == nil {
+			wi.Collaborators = cols
+		}
+		if cycles, err := s.ListSLACycles(ctx, wi.ID); err == nil {
+			wi.SLACycles = cycles
+		}
+	}
+	// F27: waktu penyelesaian + aktornya.
+	s.computeCompletion(ctx, wi)
 	return nil
+}
+
+// completionStatuses adalah status akhir yang dianggap "selesai".
+var completionStatuses = []string{
+	"done", "closed", "activated", "completed", "fulfilled", "resolved",
+}
+
+// computeCompletion mengisi WorkItem.CompletedAt (resolved_at → closed_at) dan
+// CompletedBy (actor event status-final; fallback updated_by_username).
+func (s *Store) computeCompletion(ctx context.Context, wi *models.WorkItem) {
+	if wi.ResolvedAt != nil {
+		wi.CompletedAt = wi.ResolvedAt
+	} else if wi.ClosedAt != nil {
+		wi.CompletedAt = wi.ClosedAt
+	}
+
+	// Cari event terakhir yang memindahkan status ke status akhir selesai.
+	var actor string
+	err := s.pool.QueryRow(ctx, `
+		SELECT actor_username FROM work_item_events
+		WHERE work_item_id=$1 AND to_value = ANY($2::text[])
+		ORDER BY id DESC LIMIT 1`, wi.ID, completionStatuses).Scan(&actor)
+	if err == nil && actor != "" {
+		wi.CompletedBy = actor
+		return
+	}
+	// Fallback: pengubah terakhir.
+	if wi.CompletedAt != nil {
+		wi.CompletedBy = wi.UpdatedByUsername
+	}
 }
 
 // ListWorkItemsParams adalah filter daftar work item.
@@ -209,6 +277,13 @@ type ListWorkItemsParams struct {
 	Offset     int
 	OrderBy    string
 	Descending bool
+
+	// F31: pembatasan per tim untuk task & daily_task.
+	// OwnerScopeUsername, bila tidak kosong, membatasi ke item tanpa tim
+	// (team_id IS NULL) yang dibuat/dimiliki oleh username tsb. Dipakai untuk
+	// pengguna non-admin yang belum punya tim. Bila kosong, pembatasan tim
+	// memakai TeamID.
+	OwnerScopeUsername string
 
 	// DayFrom/DayTo menyaring berdasarkan tanggal (zona WIB) dari start_at.
 	// Dipakai fitur Daily Task: satu hari penuh [DayFrom, DayTo).
@@ -244,6 +319,13 @@ func (s *Store) ListWorkItems(ctx context.Context, p ListWorkItemsParams) ([]mod
 	}
 	if p.TeamID != nil {
 		where = append(where, "team_id = "+arg(*p.TeamID))
+	}
+	// F31: pembatasan per tim untuk task & daily_task (hanya berlaku bila tipe
+	// item yang diminta adalah task/daily_task — dijaga di lapisan API).
+	if p.OwnerScopeUsername != "" {
+		u := strings.ToLower(strings.TrimSpace(p.OwnerScopeUsername))
+		where = append(where, "team_id IS NULL AND (lower(created_by) = "+arg(u)+
+			" OR lower(owner_username) = "+arg(u)+")")
 	}
 	if p.TargetID != nil {
 		where = append(where, "target_id = "+arg(*p.TargetID))
@@ -327,7 +409,7 @@ func (s *Store) UpdateWorkItemFields(ctx context.Context, tx pgx.Tx, id uuid.UUI
 		"expire_at": true, "device_ref": true, "service_ref": true, "customer_ref": true,
 		"tags": true, "sla_policy_id": true, "sla_state": true,
 		"first_response_at": true, "resolved_at": true, "closed_at": true,
-		"paused_total_seconds": true, "parent_id": true,
+		"paused_total_seconds": true, "parent_id": true, "updated_by_username": true,
 	}
 
 	sets := []string{}
@@ -381,12 +463,22 @@ func (s *Store) SoftDeleteWorkItem(ctx context.Context, id uuid.UUID) (int, erro
 
 // CountWorkItemsByTypeStatus mengembalikan jumlah work item dikelompokkan
 // berdasarkan item_type dan status (dipakai dashboard).
-func (s *Store) CountWorkItemsByTypeStatus(ctx context.Context) (map[string]map[string]int, error) {
-	rows, err := s.pool.Query(ctx, `
+// CountWorkItemsByTypeStatus menghitung jumlah per tipe & status.
+//
+// F31: scope (bila tidak nil) hanya membatasi baris task & daily_task ke
+// tim/pemilik pengguna; tipe lain tetap dihitung global (Y).
+func (s *Store) CountWorkItemsByTypeStatus(ctx context.Context, scope *DashboardScope) (map[string]map[string]int, error) {
+	args := []any{}
+	arg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	q := `
 		SELECT item_type, status, count(*)
 		FROM work_items
-		WHERE NOT is_deleted
-		GROUP BY item_type, status`)
+		WHERE NOT is_deleted` + scope.clause(arg) + `
+		GROUP BY item_type, status`
+	rows, err := s.pool.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}

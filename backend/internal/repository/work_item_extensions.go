@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,16 +23,48 @@ import (
 // ---------------------------------------------------------------------------
 
 // CreateTaskDetails membuat baris task_details.
-func (s *Store) CreateTaskDetails(ctx context.Context, tx pgx.Tx, workItemID uuid.UUID, checklist []models.ChecklistItem, estimateMinutes *int) error {
+func (s *Store) CreateTaskDetails(ctx context.Context, tx pgx.Tx, workItemID uuid.UUID, checklist []models.ChecklistItem, estimateMinutes *int, dailyTaskType string) error {
 	if checklist == nil {
 		checklist = []models.ChecklistItem{}
 	}
 	_, err := tx.Exec(ctx, `
-		INSERT INTO task_details (work_item_id, checklist_json, progress_pct, estimate_minutes)
-		VALUES ($1, $2, 0, $3)
+		INSERT INTO task_details (work_item_id, checklist_json, progress_pct, estimate_minutes, daily_task_type)
+		VALUES ($1, $2, 0, $3, $4)
 		ON CONFLICT (work_item_id) DO NOTHING`,
-		workItemID, checklist, estimateMinutes)
+		workItemID, checklist, estimateMinutes, dailyTaskType)
 	return err
+}
+
+// UpdateTaskResult menyimpan hasil penyelesaian Daily Task (F24): keterangan +
+// status hasil (normal/bermasalah) + jenis bila belum ada.
+func (s *Store) UpdateTaskResult(ctx context.Context, tx pgx.Tx, workItemID uuid.UUID, completionNote, resultStatus string) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE task_details
+		   SET completion_note = $2, result_status = $3
+		 WHERE work_item_id = $1`, workItemID, completionNote, resultStatus)
+	return err
+}
+
+// LinkDailyTicket menautkan daily task ke tiket hasil eskalasi (F24).
+// Idempotent: mengembalikan tiket yang sudah tertaut bila ada (ok=false bila baru).
+func (s *Store) LinkDailyTicket(ctx context.Context, tx pgx.Tx, dailyTaskID, ticketID uuid.UUID, actor string) error {
+	_, err := tx.Exec(ctx, `
+		INSERT INTO daily_ticket_links (daily_task_id, ticket_id, created_by)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (daily_task_id) DO NOTHING`, dailyTaskID, ticketID, actor)
+	return err
+}
+
+// GetDailyTicketLink mengambil tiket yang tertaut ke sebuah daily task (F24).
+// Mengembalikan uuid.Nil bila belum ada tautan.
+func (s *Store) GetDailyTicketLink(ctx context.Context, dailyTaskID uuid.UUID) (uuid.UUID, error) {
+	var ticketID uuid.UUID
+	err := s.pool.QueryRow(ctx, `
+		SELECT ticket_id FROM daily_ticket_links WHERE daily_task_id=$1`, dailyTaskID).Scan(&ticketID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, nil
+	}
+	return ticketID, err
 }
 
 // CreateReminderDetails membuat baris reminder_details.
@@ -59,9 +92,15 @@ type CreateRFSDetailsParams struct {
 	Bandwidth      string
 	PicNOC         string
 	PicSales       string
-	SalesUsername  string
-	Site           string
-	InstallStage   string
+	// F25: PIC berupa tim.
+	PicTeamID     *uuid.UUID
+	SalesUsername string
+	Site          string
+	InstallStage  string
+	// F23: catatan penanganan.
+	IssueFound      string
+	Troubleshooting string
+	ActionSolution  string
 }
 
 // CreateRFSDetails membuat baris rfs_details.
@@ -72,11 +111,13 @@ func (s *Store) CreateRFSDetails(ctx context.Context, tx pgx.Tx, workItemID uuid
 	_, err := tx.Exec(ctx, `
 		INSERT INTO rfs_details
 			(work_item_id, customer_name, service_id, service_package, bandwidth,
-			 pic_noc, pic_sales, sales_username, site, install_stage)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+			 pic_noc, pic_sales, pic_team_id, sales_username, site, install_stage,
+			 issue_found, troubleshooting, action_solution)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 		ON CONFLICT (work_item_id) DO NOTHING`,
 		workItemID, p.CustomerName, p.ServiceID, p.ServicePackage, p.Bandwidth,
-		p.PicNOC, p.PicSales, p.SalesUsername, p.Site, p.InstallStage)
+		p.PicNOC, p.PicSales, p.PicTeamID, p.SalesUsername, p.Site, p.InstallStage,
+		p.IssueFound, p.Troubleshooting, p.ActionSolution)
 	return err
 }
 

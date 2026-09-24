@@ -578,6 +578,110 @@ otomatis memperoleh notifikasi, komentar, timeline, audit, dan tags.
   409, outbox `rendered_body` memuat `📋 DAILY TASK BARU`; `go test ./...`,
   `tsc`, `vite build` bersih; smoke **35/35**.
 
+### F18 — Auto-sync Todo & Daily Task ke Google Spreadsheet ✅ SELESAI
+Setiap **Todo Task** (`item_type=task`) dan **Daily Task** (`item_type=daily_task`)
+yang dibuat NOC otomatis tercatat sebagai satu baris di Google Spreadsheet; status
+diperbarui **in-place** (dicocokkan lewat kolom **Ref**). NOC tidak perlu mencatat
+manual — website menjadi sumber tunggal.
+1. **Model** — migrasi `00011` (skema **11**): `sheet_sync_config` (tunggal:
+   `enabled`, `spreadsheet_id`, `sheet_name`, service account terenkripsi,
+   `header_written`, `last_sync_at/error`) + `sheet_sync_queue` (pola
+   `notification_outbox`: `event_key` UNIQUE = `sheet:<item_id>`, `op`
+   append/update, backoff, `FOR UPDATE SKIP LOCKED`).
+2. **Paket `internal/sheets`** — klien Google Sheets API v4 (service account
+   JWT→OAuth2): `EnsureHeader`, `AppendRow`, `FindRow`, `UpdateRow`,
+   `CreateSheetTab`, `TestConnection`; validasi nama sheet (≤100 char, tanpa
+   `[ ] * ? / \ :`); pemetaan kolom A–L; `Queue` (Enqueue/Dispatch/RecoverStuck).
+3. **Konfigurasi dari panel** — Spreadsheet ID, **nama sheet**, dan service
+   account JSON dikelola dari **MANAJEMEN → Google Sheets** (admin). Kredensial
+   disimpan terenkripsi AES-256-GCM (pola provider) dan tidak pernah
+   dikembalikan utuh oleh API (hanya `client_email` + `service_account_set`).
+   Tersedia tombol **Uji Koneksi** dan **Buat Sheet Tab**.
+4. **Trigger best-effort** — `syncSheet` dipanggil pada create/status/update
+   Todo Task **dan Daily Task** (via `isSheetSyncedType`); kegagalan enqueue tidak
+   menggagalkan operasi utama (item sudah tersimpan). Penghapusan item menandai
+   baris menjadi `Dihapus` (riwayat tetap utuh). **Hanya item baru** yang
+   disinkronkan (tanpa backfill data lama).
+5. **Worker** — `runSheetSync` (`@every INGATIN_SHEET_SYNC_INTERVAL_SECONDS`,
+   default 30) + `runSheetRecovery` (`@every 5m`). Interval masuk `Marshal()`
+   konfigurasi. Bila sinkronisasi nonaktif, antrean dibiarkan menunggu (tidak
+   dihabiskan) sehingga aktif kembali setelah admin melengkapi konfigurasi.
+6. **Kolom sheet** (15 kolom, A–O) — Ref | Tipe | Judul | Deskripsi | Prioritas |
+   Status | Owner | Dibuat Oleh | Diperbarui Oleh | Device | Tags | Due (WIB) |
+   Dibuat (WIB) | Diperbarui (WIB) | Keterangan.
+- **Bukti:** `GET /api/sheet-sync` 401 tanpa token, 200 untuk admin; nama sheet
+  `[Bad]` → 400; service account invalid → 400; `test` tanpa kredensial → 400;
+  buat Todo + ubah status → **1 entri** antrean (`op=update`,
+  `action=status_changed`, payload status terbaru) dan **reminder tidak masuk
+  antrean**; Daily Task ikut tersinkron (`isSheetSyncedType`); item dihapus →
+  baris ditandai `Dihapus`; saat nonaktif entri tetap `pending` tanpa error. Uji
+  klien terhadap server tiruan Sheets: buat tab + header idempoten, append→find
+  (baris 2)→update baris yang sama. `go test ./...` (termasuk paket `sheets`)
+  hijau, `tsc`+`vite build` bersih, smoke **41/41**.
+
+### F19 — Jejak pengubah terakhir & keterangan penyelesaian ✅ SELESAI
+1. **`updated_by_username`** — kolom baru di `work_items` (migrasi `00012`, skema
+   **12**). Diisi otomatis pada create/update/status-change (juga force-status)
+   dari username operator. Ditampilkan sebagai **"Diperbarui oleh …"** pada kartu
+   Daily Task dan pada tab Ringkasan detail item (beserta waktunya).
+2. **Keterangan penyelesaian** — kolom `completion_note` di `task_details`.
+   Saat menandai **Daily Task Selesai**, UI menampilkan dialog konfirmasi dengan
+   kotak keterangan (opsional); isinya dikirim sebagai `note` pada
+   `POST /api/items/{id}/status` dan disimpan. Tampil pada detail item.
+   `task_details` kini juga dibuat untuk `daily_task` (sebelumnya hanya `task`),
+   dan `loadExtensions` memuatnya untuk kedua tipe.
+3. **Spreadsheet** — dua kolom baru: **Diperbarui Oleh** (I) dan **Keterangan**
+   (O), total 15 kolom (A–O). Header **self-healing**: bila jumlah/urutan kolom
+   berubah, header ditulis ulang otomatis.
+- **Bukti:** daily task dibuat → `updated_by=admin`; ditandai selesai dengan
+  keterangan → `completion_note` tersimpan & terlihat di detail; payload antrean
+  memuat `updated_by` + `completion_note`; spreadsheet menampilkan
+  `upd_by=admin, ket="Selesai dicek oleh NOC shift malam."`; migrasi v12;
+  `go test ./...` + integration hijau; `tsc`/`vite build` bersih; smoke 41/41.
+
+### F20 — SLA per siklus, Assign/Penangan, KPI & Grafik ✅ SELESAI
+1. **Siklus SLA** (`ticket_sla_cycles`, migrasi `00014`): rincian per siklus —
+   siklus 0 sejak tiket dibuat, siklus 1.. setiap reopen. `closed_at` tetap ada
+   + tambahan `reopened_at`; riwayat tidak dihapus. Saat reopen, siklus baru
+   dibuka & `reopen_count` naik.
+2. **SLA policy per prioritas** (incident/request/change, target sama, kalender
+   **24 jam**): critical 10/120, high 15/240, normal 30/480, low 60/960 menit.
+   `sla_policy_id` tiket lama di-backfill.
+3. **Mesin SLA** (`internal/sla` + `runSLATick`): evaluasi tiap siklus aktif
+   (respons & penyelesaian vs target), set `sla_state` (`on_track`/`breached`) +
+   `sla_breached_at`, kirim `SLA_BREACH` (idempoten per siklus).
+4. **Assign & penangan** (`ticket_collaborators`): 1 owner + banyak "ikut
+   menangani". `POST /api/items/{id}/assign`, `POST/DELETE .../collaborators`.
+   Admin/owner bebas; NOC self-claim/lepas. Kredit KPI **setara**.
+5. **KPI API** `GET /api/kpi/sla?from=&to=&type=&person=` → ringkasan (met%,
+   avg/median/p90, breach), per prioritas, tren harian, per person
+   (owner ∪ collaborator). Skor = `0.5·respons% + 0.5·penyelesaian%`.
+   Ekspor `GET /api/kpi/sla/export.csv`.
+6. **Halaman KPI** (`pages/Kpi.tsx`, Recharts): 6 grafik profesional (donut,
+   gauge skor, bar per prioritas, area tren, bar peringkat person, bar bertumpuk
+   beban kerja) + tabel per person + filter periode/preset.
+- **Bukti:** siklus terbentuk saat create; close menutup siklus 0; force-unlock
+  membuka siklus 1 + `reopen_count=1` + event `unlocked`; `sla_tick` menandai
+  `breached` & mengirim `SLA_BREACH`; assign/collaborator/handling 200;
+  `go test ./...` (sla, kpi, attachments) hijau; smoke **47/47**.
+
+### F21 — Lampiran, Catatan Penanganan, Force Unlock, Open/Close ✅ SELESAI
+1. **Lampiran pendukung** (maks **50 MB**): `internal/attachments` menyimpan ke
+   `<DataDir>/attachments/<item>/…`, unduh ber-auth `GET /api/attachments/{id}`,
+   daftar/unggah/hapus. Viewer dilarang; jenis MIME dibatasi (415), ukuran
+   berlebih 413. Hanya di aplikasi (tidak ke spreadsheet).
+2. **Catatan penanganan** — 3 field `ticket_details`: `issue_found`,
+   `troubleshooting`, `action_solution` (baca semua; edit pembuat/owner/admin).
+3. **Force Unlock (admin)** `POST /api/items/{id}/force-unlock` — buka tiket
+   `closed`/`completed` tanpa aturan transisi, alasan wajib, membuka siklus SLA
+   baru, event `unlocked` + `reopened`, audit.
+4. **Tombol Open/Close** mengikuti workflow (nonaktif bila transisi tak sah).
+5. **Notifikasi** — `TICKET_REOPENED` dikirim saat tiket dibuka kembali;
+   template `SLA_WARNING`/`SLA_BREACH` diperkaya (migrasi `00015`).
+6. **Daily Task** — tenggat default **23:59 WIB** dijamin backend.
+- **Bukti:** unggah/unduh/hapus lampiran berfungsi, jenis terlarang 415;
+  PATCH catatan penanganan tersimpan; force-unlock 200; smoke 47/47.
+
 ### F14+ — Inbound & Integrasi
 IMAP/SMTP → ticket, webhook generik `POST /api/hooks/{token}`, Telegram command
 (`/ticket`), provider kanal tambahan, portal customer, reporting.

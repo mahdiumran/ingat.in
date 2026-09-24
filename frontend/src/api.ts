@@ -19,8 +19,15 @@ export type ApiUser = {
   email?: string
   full_name?: string
   role: string
+  team_id?: string
+  telegram_chat_id?: string
+  wa_number?: string
   is_active?: boolean
+  last_login_at?: string
   created_at?: string
+  /** F22: daftar izin efektif (diisi oleh /auth/me) + penanda super user. */
+  permissions?: string[]
+  is_super?: boolean
 }
 
 export type ApiError = Error & { status?: number }
@@ -120,7 +127,9 @@ export async function request<T = unknown>(path: string, init: RequestOptions = 
   const { skipAuthRetry, ...rest } = init
 
   const headers = new Headers(rest.headers)
-  if (!headers.has('Content-Type') && rest.body) {
+  // FormData: biarkan browser menetapkan Content-Type (beserta boundary multipart).
+  const isFormData = typeof FormData !== 'undefined' && rest.body instanceof FormData
+  if (!headers.has('Content-Type') && rest.body && !isFormData) {
     headers.set('Content-Type', 'application/json')
   }
   const token = getAccessToken()
@@ -264,15 +273,34 @@ export const api = {
 
   teams: () =>
     request<{
-      teams: { id: string; name: string; description: string; is_active: boolean }[]
+      teams: {
+        id: string
+        name: string
+        description: string
+        category: string
+        target_id?: string
+        is_active: boolean
+      }[]
       total: number
     }>('/teams'),
 
-  createTeam: (name: string, description: string) =>
+  createTeam: (payload: { name: string; description?: string; category?: string; target_id?: string }) =>
     request<{ id: string; name: string }>('/teams', {
       method: 'POST',
-      body: JSON.stringify({ name, description }),
+      body: JSON.stringify(payload),
     }),
+
+  updateTeam: (
+    id: string,
+    payload: {
+      name?: string
+      description?: string
+      category?: string
+      is_active?: boolean
+      target_id?: string
+    },
+  ) =>
+    request<{ id: string; name: string }>(`/teams/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
 
   deleteTeam: (id: string) => request<{ ok: boolean }>(`/teams/${id}`, { method: 'DELETE' }),
 
@@ -310,6 +338,7 @@ export type WorkItem = {
   stage: string
   owner_username: string
   requester_username: string
+  team_id?: string
   target_id?: string
   due_at?: string
   expire_at?: string
@@ -319,9 +348,21 @@ export type WorkItem = {
   customer_ref: string
   tags: string[]
   created_by: string
+  updated_by_username: string
   created_at: string
   updated_at: string
-  task?: { checklist: { text: string; done: boolean }[]; progress_pct: number; estimate_minutes?: number }
+  // F27: waktu penyelesaian + aktor penyelesai (turunan).
+  completed_at?: string
+  completed_by?: string
+  task?: {
+    checklist: { text: string; done: boolean }[]
+    progress_pct: number
+    estimate_minutes?: number
+    completion_note?: string
+    // F24: jenis daily task + hasil penyelesaian (normal/bermasalah).
+    daily_task_type?: string
+    result_status?: string
+  }
   reminder?: {
     category: string
     subject_name: string
@@ -338,8 +379,26 @@ export type WorkItem = {
     bandwidth: string
     pic_noc: string
     pic_sales: string
+    // F25: PIC berupa tim.
+    pic_team_id?: string
     site: string
     install_stage: string
+    // F23: catatan penanganan (modal Troubleshoot).
+    issue_found?: string
+    troubleshooting?: string
+    action_solution?: string
+  }
+  // F25: data teknis aktivasi RFS.
+  activation?: {
+    work_item_id: string
+    ip_address: string
+    vlan_detail: string
+    interface_port: string
+    bandwidth_test: string
+    ping_test: string
+    packet_loss: string
+    updated_by: string
+    updated_at: string
   }
   ticket?: {
     work_item_id: string
@@ -351,12 +410,49 @@ export type WorkItem = {
     assignment_group: string
     escalation_level: number
     reopen_count: number
+    issue_found: string
+    troubleshooting: string
+    action_solution: string
   }
+  // F20: penangan tambahan + siklus SLA.
+  collaborators?: Collaborator[]
+  sla_cycles?: SLACycle[]
+  reopen_count?: number
   // SLA turunan (tiket): durasi dari first_response_at sampai closed_at/now.
   sla_seconds?: number
   sla_running?: boolean
   sla_start_at?: string
   sla_end_at?: string
+}
+
+export type Collaborator = {
+  id: string
+  work_item_id: string
+  username: string
+  added_by: string
+  created_at: string
+}
+
+export type SLACycle = {
+  id: string
+  work_item_id: string
+  cycle_no: number
+  opened_at: string
+  reopened_at?: string
+  closed_at?: string
+  first_response_at?: string
+  handler_username: string
+  closed_by: string
+}
+
+export type Attachment = {
+  id: string
+  work_item_id: string
+  filename: string
+  size_bytes: number
+  mime: string
+  uploaded_by: string
+  created_at: string
 }
 
 export type WorkItemEvent = {
@@ -500,10 +596,29 @@ export const workItemsApi = {
   update: (id: string, payload: Record<string, unknown>) =>
     request<WorkItem>(`/items/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
 
-  changeStatus: (id: string, status: string, note = '') =>
+  changeStatus: (id: string, status: string, note = '', resultStatus = '') =>
     request<WorkItem>(`/items/${id}/status`, {
       method: 'POST',
-      body: JSON.stringify({ status, note }),
+      body: JSON.stringify({ status, note, ...(resultStatus ? { result_status: resultStatus } : {}) }),
+    }),
+
+  /**
+   * escalateTicket (F24) — membuat tiket incident/request dari Daily Task
+   * "bermasalah" dan menautkannya (idempotent).
+   */
+  escalateTicket: (
+    id: string,
+    payload: {
+      ticket_type: 'incident' | 'request'
+      title?: string
+      note?: string
+      priority?: string
+      ticket?: Record<string, unknown>
+    },
+  ) =>
+    request<WorkItem>(`/items/${id}/escalate-ticket`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
     }),
 
   /** forceStatus (admin) — melompati aturan transisi; alasan wajib. */
@@ -513,7 +628,61 @@ export const workItemsApi = {
       body: JSON.stringify({ status, note: reason }),
     }),
 
+  /** forceUnlock (admin): buka tiket yang sudah closed/completed tanpa aturan transisi. */
+  forceUnlock: (id: string, status: string, note: string) =>
+    request<WorkItem>(`/items/${id}/force-unlock`, {
+      method: 'POST',
+      body: JSON.stringify({ status, note }),
+    }),
+
+  /**
+   * assign menetapkan owner (penanggung jawab utama). F25: bila owner sudah
+   * terisi, hanya admin yang boleh mengganti dan `reason` wajib diisi.
+   */
+  assign: (id: string, ownerUsername: string, opts: { reason?: string; force?: boolean } = {}) =>
+    request<WorkItem>(`/items/${id}/assign`, {
+      method: 'POST',
+      body: JSON.stringify({
+        owner_username: ownerUsername,
+        ...(opts.reason ? { reason: opts.reason } : {}),
+        ...(opts.force ? { force: true } : {}),
+      }),
+    }),
+
+  /** updateRFS menyimpan detail RFS termasuk PIC team + data aktivasi (F25). */
+  updateRFS: (id: string, rfs: Record<string, unknown>) =>
+    request<WorkItem>(`/items/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ rfs }),
+    }),
+
+  addCollaborator: (id: string, username: string) =>
+    request<{ ok: boolean; inserted: boolean; collaborators: Collaborator[] }>(
+      `/items/${id}/collaborators`,
+      { method: 'POST', body: JSON.stringify({ username }) },
+    ),
+
+  removeCollaborator: (id: string, username: string) =>
+    request<{ ok: boolean; removed: boolean; collaborators: Collaborator[] }>(
+      `/items/${id}/collaborators/${encodeURIComponent(username)}`,
+      { method: 'DELETE' },
+    ),
+
   remove: (id: string) => request<{ ok: boolean }>(`/items/${id}`, { method: 'DELETE' }),
+
+  /** F23: batalkan Aktivasi/EWO (RFS). */
+  rfsCancel: (id: string, reason = '') =>
+    request<WorkItem>(`/items/${id}/rfs-cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    }),
+
+  /** F23: hapus Aktivasi/EWO dengan alasan wajib. */
+  rfsDelete: (id: string, reason: string) =>
+    request<{ ok: boolean; deleted: number }>(`/items/${id}/rfs-delete`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    }),
 
   addComment: (id: string, body: string) =>
     request<Comment>(`/items/${id}/comments`, {
@@ -550,12 +719,13 @@ export const dailyTaskApi = {
    * listForDay mengambil daily task satu hari (zona WIB, YYYY-MM-DD) plus
    * carry-over task yang belum selesai dari hari-hari sebelumnya.
    */
-  listForDay: (date: string, opts: { owner?: string; q?: string; status?: string; carryOver?: boolean } = {}) => {
+  listForDay: (date: string, opts: { owner?: string; q?: string; status?: string; carryOver?: boolean; teamId?: string } = {}) => {
     const params: Record<string, string> = { type: 'daily_task', date, limit: '200' }
     if (opts.owner) params.owner = opts.owner
     if (opts.q) params.q = opts.q
     if (opts.status) params.status = opts.status
     if (opts.carryOver) params.carry_over = 'true'
+    if (opts.teamId) params.team_id = opts.teamId
     const qs = new URLSearchParams(params).toString()
     return request<{ items: WorkItem[]; total: number }>(`/items?${qs}`)
   },
@@ -570,6 +740,10 @@ export const dailyTaskApi = {
     target_id?: string
     tags?: string[]
     status?: string
+    // F24: jenis daily task (kode master data `daily_task_type`).
+    daily_task_type?: string
+    // F31: tim pemilik (admin saja; non-admin dipaksa ke tim sendiri di server).
+    team_id?: string
   }) => {
     // start_at = awal hari WIB, due_at = akhir hari WIB (label konsisten).
     const start = new Date(`${payload.date}T00:00:00+07:00`).toISOString()
@@ -586,10 +760,194 @@ export const dailyTaskApi = {
         due_at: end,
         parent_id: payload.parent_id ?? '',
         target_id: payload.target_id ?? '',
+        ...(payload.team_id ? { team_id: payload.team_id } : {}),
         tags: payload.tags ?? [],
         ...(payload.status ? { status: payload.status } : {}),
+        ...(payload.daily_task_type
+          ? { task: { daily_task_type: payload.daily_task_type } }
+          : {}),
       }),
     })
+  },
+
+  /** types (F24) — daftar jenis Daily Task dari master data + flag can-ticket. */
+  types: async (): Promise<{ code: string; label: string; canTicket: boolean }[]> => {
+    const res = await masterDataApi.list({ kind: 'daily_task_type', active: 'true' })
+    return res.entries.map((e) => ({
+      code: e.code,
+      label: e.label,
+      canTicket: Boolean((e.meta as { dapat_membuat_tiket?: boolean })?.dapat_membuat_tiket),
+    }))
+  },
+}
+
+/* ------------------------------------------------------------------------- */
+/* Google Sheets sync (F18)                                                  */
+/* ------------------------------------------------------------------------- */
+
+export type SheetSyncConfig = {
+  enabled: boolean
+  spreadsheet_id: string
+  sheet_name: string
+  service_account_set: boolean
+  client_email: string
+  header_written: boolean
+  last_sync_at?: string
+  last_error: string
+}
+
+export type SheetSyncQueueCounts = {
+  pending: number
+  sending: number
+  sent: number
+  failed: number
+}
+
+export const sheetSyncApi = {
+  get: () => request<{ config: SheetSyncConfig; queue: SheetSyncQueueCounts }>('/sheet-sync'),
+
+  save: (payload: {
+    enabled?: boolean
+    spreadsheet_id?: string
+    sheet_name?: string
+    service_account_json?: string
+    reset_header?: boolean
+  }) =>
+    request<{ config: SheetSyncConfig; queue: SheetSyncQueueCounts }>('/sheet-sync', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  test: () =>
+    request<{ ok: boolean; client_email: string; sheet_name: string }>('/sheet-sync/test', {
+      method: 'POST',
+    }),
+
+  createTab: () =>
+    request<{ ok: boolean; sheet_name: string }>('/sheet-sync/create-tab', { method: 'POST' }),
+}
+
+/* ------------------------------------------------------------------------- */
+/* Cadangan & pemulihan (F34, admin only)                                    */
+/* ------------------------------------------------------------------------- */
+
+export type BackupInfo = {
+  name: string
+  size_bytes: number
+  created_at: string
+  uploaded: boolean
+  uploaded_at?: string
+  upload_error?: string
+}
+
+export type BackupFTPConfig = {
+  enabled: boolean
+  host: string
+  port: number
+  username: string
+  password_set: boolean
+  dir: string
+  passive: boolean
+}
+
+export type BackupConfig = {
+  enabled: boolean
+  schedule: string
+  keep_days: number
+  ftp: BackupFTPConfig
+  last_run_at?: string
+  last_status: string
+  last_error: string
+  last_file: string
+}
+
+export const backupApi = {
+  list: () =>
+    request<{
+      config: BackupConfig
+      backups: BackupInfo[]
+      dir: string
+      tools: { pg_dump: boolean; pg_restore: boolean }
+    }>('/backup'),
+
+  create: () =>
+    request<{ ok: boolean; backup: BackupInfo; upload?: string }>('/backup', { method: 'POST' }),
+
+  saveConfig: (payload: {
+    enabled?: boolean
+    schedule?: string
+    keep_days?: number
+    ftp_password?: string
+    ftp?: {
+      enabled?: boolean
+      host?: string
+      port?: number
+      username?: string
+      dir?: string
+      passive?: boolean
+    }
+  }) =>
+    request<{ config: BackupConfig; backups: BackupInfo[]; dir: string }>('/backup/config', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  testFTP: () =>
+    request<{ ok: boolean; message: string }>('/backup/ftp/test', { method: 'POST' }),
+
+  /** uploadFile mengunggah berkas .dump dari komputer; opsional langsung restore. */
+  uploadFile: (file: File, restore: boolean) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    if (restore) {
+      fd.append('restore', 'true')
+      fd.append('confirm', 'RESTORE')
+    }
+    return request<{ ok: boolean; backup: BackupInfo; restored?: boolean; message: string }>(
+      '/backup/upload',
+      { method: 'POST', body: fd },
+    )
+  },
+
+  upload: (name: string) =>
+    request<{ ok: boolean; message: string }>(`/backup/${encodeURIComponent(name)}/upload`, {
+      method: 'POST',
+    }),
+
+  restore: (name: string) =>
+    request<{ ok: boolean; message: string }>(`/backup/${encodeURIComponent(name)}/restore`, {
+      method: 'POST',
+      body: JSON.stringify({ confirm: 'RESTORE' }),
+    }),
+
+  remove: (name: string) =>
+    request<{ ok: boolean }>(`/backup/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+
+  /** download mengunduh berkas cadangan (perlu header Authorization). */
+  download: async (name: string) => {
+    const token = getAccessToken()
+    const res = await fetch(`/api/backup/${encodeURIComponent(name)}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    })
+    if (!res.ok) {
+      let message = `Unduhan gagal (${res.status})`
+      try {
+        const data = await res.json()
+        if (data && typeof data === 'object' && 'error' in data) message = String(data.error)
+      } catch {
+        /* abaikan */
+      }
+      throw new Error(message)
+    }
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = name
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
   },
 }
 
@@ -671,15 +1029,68 @@ export const masterDataApi = {
     }),
 
   rolePermissions: () =>
-    request<{ permissions: RolePermission[]; roles: string[]; actions: string[] }>(
-      '/role-permissions',
-    ),
+    request<{
+      permissions: RolePermission[]
+      roles: string[]
+      role_labels?: Record<string, string>
+      role_is_super?: Record<string, boolean>
+      actions: string[]
+    }>('/role-permissions'),
 
   setRolePermission: (role: string, action: string, allowed: boolean) =>
     request<{ ok: boolean }>('/role-permissions', {
       method: 'POST',
       body: JSON.stringify({ role, action, allowed }),
     }),
+}
+
+/* ------------------------------------------------------------------------- */
+/* F22 — Peran dinamis (roles)                                              */
+/* ------------------------------------------------------------------------- */
+
+export type RoleDef = {
+  role: string
+  label: string
+  description: string
+  is_super: boolean
+  is_system: boolean
+  rank: number
+  created_at: string
+  updated_at: string
+}
+
+export const rolesApi = {
+  list: () => request<{ roles: RoleDef[]; total: number }>('/roles'),
+
+  create: (payload: { role: string; label: string; description?: string; rank?: number }) =>
+    request<RoleDef>('/roles', { method: 'POST', body: JSON.stringify(payload) }),
+
+  update: (role: string, payload: { label?: string; description?: string; rank?: number }) =>
+    request<RoleDef>(`/roles/${role}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+
+  remove: (role: string) => request<{ ok: boolean }>(`/roles/${role}`, { method: 'DELETE' }),
+}
+
+/* ------------------------------------------------------------------------- */
+/* F22 — Ringkasan tugas harian (daily summary)                             */
+/* ------------------------------------------------------------------------- */
+
+export type DailySummarySettings = {
+  mode: 'on_change' | 'interval' | 'off'
+  interval_minutes: number
+  modes: string[]
+}
+
+export const dailySummaryApi = {
+  get: () => request<DailySummarySettings>('/settings/daily-summary'),
+
+  save: (payload: { mode: string; interval_minutes?: number }) =>
+    request<DailySummarySettings>('/settings/daily-summary', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  preview: () => request<{ ok: boolean; added: number }>('/settings/daily-summary/preview', { method: 'POST' }),
 }
 
 /* ------------------------------------------------------------------------- */
@@ -754,6 +1165,15 @@ export const notificationApi = {
 
   targets: () => request<{ targets: Target[]; total: number }>('/targets'),
 
+  /**
+   * targetOptions (F32) — daftar target ringan (id+nama) untuk dropdown form.
+   * Terbuka untuk semua role; hanya nama yang dibagikan.
+   */
+  targetOptions: () =>
+    request<{ targets: { id: string; name: string; kind: string; is_active: boolean }[]; total: number }>(
+      '/targets/options',
+    ),
+
   createTarget: (payload: { name: string; kind: string; notes?: string }) =>
     request<Target>('/targets', { method: 'POST', body: JSON.stringify(payload) }),
 
@@ -796,4 +1216,169 @@ export const notificationApi = {
       `/outbox${qs ? `?${qs}` : ''}`,
     )
   },
+}
+
+/* ------------------------------------------------------------------------- */
+/* Lampiran (F21)                                                            */
+/* ------------------------------------------------------------------------- */
+
+export const attachmentsApi = {
+  list: (itemId: string) =>
+    request<{ attachments: Attachment[]; max_bytes: number }>(`/items/${itemId}/attachments`),
+
+  upload: (itemId: string, file: File) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return request<Attachment>(`/items/${itemId}/attachments`, { method: 'POST', body: fd })
+  },
+
+  /** deleteUrl/unduh memakai endpoint ber-auth (fetch + blob). */
+  remove: (attachmentId: string) =>
+    request<{ ok: boolean }>(`/attachments/${attachmentId}`, { method: 'DELETE' }),
+
+  downloadUrl: (attachmentId: string) => `/api/attachments/${attachmentId}`,
+}
+
+/* ------------------------------------------------------------------------- */
+/* KPI & SLA (F20)                                                           */
+/* ------------------------------------------------------------------------- */
+
+export type KPISummary = {
+  tickets_total: number
+  tickets_closed: number
+  tickets_open: number
+  response_met: number
+  response_total: number
+  response_met_pct: number
+  resolution_met: number
+  resolution_total: number
+  resolution_met_pct: number
+  avg_resolution_seconds: number
+  median_resolution_seconds: number
+  p90_resolution_seconds: number
+  breached: number
+  sla_score: number
+  todo_total: number
+  todo_on_time: number
+  todo_on_time_pct: number
+  daily_total: number
+  daily_on_time: number
+  daily_on_time_pct: number
+}
+
+export type KPIPerson = {
+  username: string
+  assigned_total: number
+  resolved_total: number
+  open_total: number
+  response_met_pct: number
+  resolution_met_pct: number
+  avg_resolution_seconds: number
+  breached: number
+  sla_score: number
+  todo_total: number
+  todo_on_time: number
+  daily_total: number
+  daily_on_time: number
+}
+
+export type KPIByPriority = {
+  priority: string
+  total: number
+  response_met_pct: number
+  resolution_met_pct: number
+  avg_resolution_seconds: number
+}
+
+export type KPITrendPoint = {
+  day: string
+  closed: number
+  resolution_met: number
+  resolution_met_pct: number
+}
+
+export type KPIResult = {
+  period: { from: string; to: string }
+  summary: KPISummary
+  by_priority: KPIByPriority[]
+  trend: KPITrendPoint[]
+  per_person: KPIPerson[]
+}
+
+export const kpiApi = {
+  get: (params: Record<string, string> = {}) => {
+    const qs = new URLSearchParams(params).toString()
+    return request<KPIResult>(`/kpi/sla${qs ? `?${qs}` : ''}`)
+  },
+  exportCsvUrl: (params: Record<string, string> = {}) => {
+    const qs = new URLSearchParams(params).toString()
+    return `/api/kpi/sla/export.csv${qs ? `?${qs}` : ''}`
+  },
+  /** users mengembalikan daftar username untuk filter KPI. */
+  users: () => request<{ users: string[]; total: number }>('/kpi/users'),
+}
+
+/* ------------------------------------------------------------------------- */
+/* F26 — Catatan (sticky notes) dengan tim pemilik + berbagi antar tim        */
+/* ------------------------------------------------------------------------- */
+
+export type NoteSharedTeam = { team_id: string; name: string }
+
+export type Note = {
+  id: string
+  title: string
+  body: string
+  visibility: 'internal' | 'eksternal'
+  owner_team_id?: string
+  owner_team_name?: string
+  color: string
+  pinned: boolean
+  created_by: string
+  updated_by_username: string
+  created_at: string
+  updated_at: string
+  shared_team_ids?: string[]
+  shared_teams?: NoteSharedTeam[]
+}
+
+export const notesApi = {
+  list: (params: { visibility?: string; q?: string; limit?: number } = {}) => {
+    const qs = new URLSearchParams()
+    if (params.visibility) qs.set('visibility', params.visibility)
+    if (params.q) qs.set('q', params.q)
+    if (params.limit) qs.set('limit', String(params.limit))
+    const s = qs.toString()
+    return request<{ notes: Note[]; total: number }>(`/notes${s ? `?${s}` : ''}`)
+  },
+
+  create: (payload: {
+    title?: string
+    body?: string
+    visibility?: 'internal' | 'eksternal'
+    owner_team_id?: string
+    color?: string
+    pinned?: boolean
+    shared_team_ids?: string[]
+  }) => request<Note>('/notes', { method: 'POST', body: JSON.stringify(payload) }),
+
+  update: (
+    id: string,
+    payload: {
+      title?: string
+      body?: string
+      visibility?: 'internal' | 'eksternal'
+      owner_team_id?: string
+      color?: string
+      pinned?: boolean
+      shared_team_ids?: string[]
+    },
+  ) => request<Note>(`/notes/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+
+  setShares: (id: string, teamIds: string[]) =>
+    request<Note>(`/notes/${id}/shares`, {
+      method: 'PATCH',
+      body: JSON.stringify({ team_ids: teamIds }),
+    }),
+
+  remove: (id: string) => request<{ ok: boolean }>(`/notes/${id}`, { method: 'DELETE' }),
 }

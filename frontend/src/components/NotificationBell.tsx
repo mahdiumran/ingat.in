@@ -143,7 +143,7 @@ export function NotificationBell({
           {unread > 0 ? 'notifications_active' : 'notifications'}
         </span>
         {unread > 0 && (
-          <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-critical px-1 text-[10px] font-bold text-white">
+          <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-error px-1 text-[10px] font-bold text-on-error">
             {unread > 99 ? '99+' : unread}
           </span>
         )}

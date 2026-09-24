@@ -139,6 +139,17 @@ Token Telegram dan nomor WhatsApp **tidak** diisi di `.env`; diisi lewat panel
 *Providers* dan *Notification Targets* setelah login. Ini memungkinkan perubahan
 tanpa rebuild container.
 
+### 4.5 Sinkronisasi Google Spreadsheet (F18)
+
+Hanya interval worker yang ada di `.env`; kredensial & target diisi dari panel:
+
+| Variabel | Default | Keterangan |
+|---|---|---|
+| `INGATIN_SHEET_SYNC_INTERVAL_SECONDS` | `30` | Interval worker menulis antrean ke spreadsheet |
+
+Spreadsheet ID, nama sheet, dan service account JSON dikelola dari panel
+**MANAJEMEN → Google Sheets** (lihat §8.2).
+
 ---
 
 ## 5. Detail Database
@@ -210,6 +221,13 @@ psql -h 127.0.0.1 -U ingatin -d ingatin -c 'SELECT * FROM goose_db_version ORDER
 
 **Aturan:** migrasi yang sudah pernah dijalankan **tidak boleh diedit**. Tambah file baru
 `000NN_nama.sql` di `backend/internal/db/migrations/`.
+
+**Master data default (F29):** seluruh master data referensi (kategori tiket,
+tag, warna tag, produk, jenis paket, jenis daily task, kategori tim/RFS/reminder,
+dsb.) di-*seed* lewat migrasi `00022_master_data_defaults.sql`. Karena itu,
+instalasi di server baru cukup menjalankan `migrate` — master data default sudah
+terpasang tanpa perlu restore dump. Migrasi bersifat idempoten: di database yang
+sudah berjalan tidak ada baris yang ditimpa/diduplikasi.
 
 ---
 
@@ -351,6 +369,81 @@ untuk memakai engine Go (tanpa Chromium). Catat: fitur tertentu (mis. kirim medi
 
 ---
 
+## 8.2 Google Sheets — Sinkronisasi Todo & Daily Task (F18)
+
+Setiap **Todo Task** (`item_type=task`) dan **Daily Task** (`item_type=daily_task`)
+yang dibuat NOC otomatis dicatat sebagai satu baris di Google Spreadsheet;
+perubahan status diperbarui in-place (dicocokkan lewat kolom **Ref**). Task yang
+dihapus ditandai **Dihapus** (baris tidak dibuang, riwayat tetap utuh).
+Konfigurasi **tidak** disimpan di `.env` — semuanya diisi dari panel admin.
+
+### Langkah setup
+
+1. **Buat project & service account** di [Google Cloud Console](https://console.cloud.google.com/):
+   - Buat project (atau pakai yang ada) → *APIs & Services* → aktifkan
+     **Google Sheets API**.
+   - *IAM & Admin* → *Service Accounts* → **Create service account**.
+   - Buka service account → tab *Keys* → **Add key → Create new key → JSON**.
+     Unduh berkas JSON-nya.
+2. **Siapkan spreadsheet**: buat Google Sheet, lalu **Share** ke alamat
+   `client_email` dari berkas JSON tersebut dengan akses **Editor**.
+   *(Tanpa langkah ini, sinkronisasi gagal 403.)*
+3. **Isi panel**: login sebagai admin → **MANAJEMEN → Google Sheets**:
+   - **Spreadsheet ID** — dari URL:
+     `docs.google.com/spreadsheets/d/<ID>/edit`
+   - **Nama Sheet (tab)** — nama tab tujuan (default `Todo`). Boleh diubah kapan
+     saja; karakter `[ ] * ? / \ :` tidak diizinkan.
+   - **Service Account JSON** — tempel seluruh isi berkas JSON.
+   - Simpan, lalu klik **Buat Sheet Tab** (membuat tab + header) dan
+     **Uji Koneksi** (menulis satu baris `TEST-…`).
+   - Aktifkan toggle **Aktif**.
+4. Buat sebuah Todo Task dari menu *Todo Tasks*. Dalam ≤ 30 detik barisnya muncul
+   di spreadsheet. Ubah statusnya → kolom **Status** dan **Diperbarui** ikut berubah
+   pada baris yang sama.
+
+### Kolom yang ditulis
+
+| A | B | C | D | E | F | G | H | I | J | K | L | M | N | O |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Ref | Tipe | Judul | Deskripsi | Prioritas | Status | Owner | Dibuat Oleh | Diperbarui Oleh | Device | Tags | Due (WIB) | Dibuat (WIB) | Diperbarui (WIB) | Keterangan |
+
+- **Tipe** bernilai `Todo` atau `Daily Task`.
+- **Diperbarui Oleh** username operator yang terakhir mengubah item.
+- **Keterangan** diisi operator saat menandai Daily Task **Selesai**.
+- **Status** memakai label yang enak dibaca: `Accepted`/`On Progress`/`Expired`/
+  `Canceled`/`Closed` (Task) dan `Belum Selesai`/`Selesai` (Daily Task), serta
+  `Dihapus` untuk item yang dihapus.
+- Untuk **Daily Task**, **Due (WIB)** berisi tanggal harian (23:59 WIB).
+- Bila jumlah/urutan kolom berubah antar versi, header ditulis ulang otomatis
+  (self-healing) saat worker menyinkronkan atau tombol **Buat Sheet Tab** diklik.
+
+### Catatan operasional
+
+- **Hanya item baru** yang disinkronkan (tidak ada backfill data lama).
+- Antrean disimpan di DB (`sheet_sync_queue`): aman restart & internet mati;
+  gagal → backoff 1/2/5/15/60 menit, maksimum 5 percobaan lalu `failed`.
+- Interval worker diatur `INGATIN_SHEET_SYNC_INTERVAL_SECONDS` (default 30).
+- Kolom **Ref** adalah kunci pencocokan; jangan diubah manual di spreadsheet.
+
+### Troubleshooting
+
+| Gejala | Sebab & solusi |
+|---|---|
+| Error `akses ditolak (403)` | Spreadsheet belum dibagikan ke `client_email` sebagai **Editor** |
+| Error `tidak ditemukan (404)` | `Spreadsheet ID` salah, atau tab belum dibuat → klik **Buat Sheet Tab** |
+| Error `kuota API terlampaui (429)` | Kuota Google Sheets (300 req/menit); tunggu, worker mencoba ulang otomatis |
+| Pesan `service account JSON tidak valid` | JSON terpotong saat ditempel — tempel ulang utuh |
+| Pesan `nama sheet tidak boleh memuat karakter "X"` | Ganti nama tab tanpa `[ ] * ? / \ :` |
+
+Cek antrean:
+
+```bash
+psql -h 127.0.0.1 -U ingatin -d ingatin -c \
+  "SELECT status, count(*) FROM sheet_sync_queue GROUP BY status;"
+```
+
+---
+
 ## 9. Verifikasi Pasca-Deploy
 
 ```bash
@@ -386,6 +479,9 @@ curl -s http://127.0.0.1:8091/api/health
 ---
 
 ## 10. Backup & Restore
+
+> Rangkuman di sini; panduan lengkap ada di [`BACKUP_RESTORE.md`](BACKUP_RESTORE.md)
+> (PostgreSQL — bukan MySQL).
 
 ### 10.1 Backup
 
@@ -482,3 +578,23 @@ curl -s http://127.0.0.1:8081/api/health
 - [ ] Sesi WAHA `WORKING` + dipantau di Dashboard
 - [ ] Restart server dites: semua service naik otomatis (`restart: unless-stopped`)
 - [ ] Hardening `pg_hba` dipertimbangkan (`OPERATIONS.md`)
+
+---
+
+## 8.3 SLA, KPI & Lampiran (F20/F21)
+
+### Lampiran pendukung
+- Batas ukuran per berkas: `INGATIN_ATTACHMENTS_MAX_MB` (default **50**).
+- Jenis diizinkan: `INGATIN_ATTACHMENTS_ALLOWED_TYPES` (default gambar, PDF,
+  teks/CSV, zip/gzip).
+- Berkas disimpan pada volume `ingatin_data` di `/app/data/attachments/…`;
+  unduhan melalui API ber-auth (`GET /api/attachments/{id}`).
+- **Backup** volume `ingatin_data` sudah mencakup lampiran — pastikan skrip
+  backup menyertakannya.
+
+### KPI & SLA
+- Siklus SLA per tiket (`ticket_sla_cycles`), policy per prioritas, kalender 24 jam.
+- Halaman **KPI & SLA** (menu OPERASIONAL): ringkasan, 6 grafik, tabel per person,
+  ekspor CSV, dan tombol ekspor Google Sheets.
+- Skor KPI = `0.5·respons tepat waktu% + 0.5·penyelesaian tepat waktu%`.
+- SLA tiap reopen dihitung sebagai SLA penyelesaian (tanpa metrik terpisah).

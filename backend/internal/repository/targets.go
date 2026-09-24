@@ -95,6 +95,35 @@ func (s *Store) ListTargets(ctx context.Context) ([]models.NotificationTarget, e
 	return out, nil
 }
 
+// TargetOption adalah ringkasan target untuk dropdown form (id + nama),
+// tanpa binding/destination agar aman dibaca semua role (F32).
+type TargetOption struct {
+	ID       uuid.UUID `json:"id"`
+	Name     string    `json:"name"`
+	Kind     string    `json:"kind"`
+	IsActive bool      `json:"is_active"`
+}
+
+// ListTargetOptions mengembalikan daftar target ringan (tanpa binding).
+func (s *Store) ListTargetOptions(ctx context.Context) ([]TargetOption, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, name, kind, is_active FROM notification_targets ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []TargetOption{}
+	for rows.Next() {
+		var o TargetOption
+		if err := rows.Scan(&o.ID, &o.Name, &o.Kind, &o.IsActive); err != nil {
+			return nil, err
+		}
+		out = append(out, o)
+	}
+	return out, rows.Err()
+}
+
 // UpdateTargetParams adalah parameter update target (parsial).
 type UpdateTargetParams struct {
 	Name     *string

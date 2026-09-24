@@ -133,6 +133,50 @@ psql -h 127.0.0.1 -U ingatin -d ingatin -c \
 
 ---
 
+## 4.1 Sinkronisasi Google Spreadsheet (F18)
+
+Tabel `sheet_sync_queue` menyimpan antrean penulisan Todo Task ke spreadsheet.
+
+```bash
+# Ringkasan status antrean
+psql -h 127.0.0.1 -U ingatin -d ingatin -c \
+  "SELECT status, count(*) FROM sheet_sync_queue GROUP BY status ORDER BY 2 DESC"
+
+# Entri gagal terakhir
+psql -h 127.0.0.1 -U ingatin -d ingatin -c \
+  "SELECT id, ref_no, op, action, attempts, left(last_error, 120) AS err, created_at
+   FROM sheet_sync_queue WHERE status='failed'
+   ORDER BY created_at DESC LIMIT 20"
+
+# Kondisi sinkronisasi terakhir
+psql -h 127.0.0.1 -U ingatin -d ingatin -c \
+  "SELECT enabled, spreadsheet_id, sheet_name, header_written, last_sync_at, last_error
+   FROM sheet_sync_config"
+```
+
+| Kondisi | Tindakan |
+|---|---|
+| `last_error` memuat `(403)` | Bagikan spreadsheet ke `client_email` (Editor) di panel *Google Sheets* |
+| `last_error` memuat `(404)` | Periksa `Spreadsheet ID`; klik **Buat Sheet Tab** |
+| `last_error` memuat `(429)` | Kuota; worker mencoba ulang otomatis, tidak perlu tindakan |
+| Antrean menumpuk `pending` | Pastikan service `worker` jalan; periksa toggle **Aktif** |
+| Ingin berhenti sementara | Matikan toggle **Aktif** — antrean tetap tersimpan, tidak dihabiskan |
+
+Retry manual satu entri (setelah masalah diperbaiki):
+
+```bash
+psql -h 127.0.0.1 -U ingatin -d ingatin -c \
+  "UPDATE sheet_sync_queue
+   SET status='pending', attempts=0, next_attempt_at=now(), last_error=''
+   WHERE id=<ID>"
+```
+
+> Entri unik per work item (`event_key=sheet:<id>`) — satu Todo Task selalu
+> menempati satu baris di spreadsheet. Perubahan status menimpa baris itu, bukan
+> menambah baris baru.
+
+---
+
 ## 5. Sesi & Autentikasi
 
 JWT access berlaku **72 jam**; refresh token 30 hari dan tersimpan sebagai hash.
@@ -157,6 +201,9 @@ lama langsung tidak valid.
 ---
 
 ## 6. Backup & Restore
+
+> Panduan rinci (termasuk perbedaan dari MySQL, verifikasi, dan uji restore ke DB
+> sementara) ada di [`BACKUP_RESTORE.md`](BACKUP_RESTORE.md).
 
 ```bash
 ./scripts/backup.sh                        # manual
@@ -197,6 +244,71 @@ Sesi tersimpan di volume `waha_sessions`. `docker compose down` **tidak** mengha
 Hilang sesi → buka `:8010`, scan QR baru.
 
 Hemat memori: tambahkan `WHATSAPP_DEFAULT_ENGINE=GOWS` pada service `waha`.
+
+---
+
+## 7.1 Bot Command Telegram (F12)
+
+Bot menerima command dari grup NOC lewat webhook
+`POST https://<host>/api/hooks/telegram/<secret>` dan membuat/mengubah work item
+memakai aturan yang sama dengan panel.
+
+### Aktivasi
+
+1. Isi secret di `.env` (acak, rahasia):
+
+   ```bash
+   openssl rand -hex 20     # -> INGATIN_TELEGRAM_WEBHOOK_SECRET
+   ```
+
+2. Restart API: `docker compose up -d api`.
+3. Daftarkan webhook ke Telegram (sekali; token dari @BotFather):
+
+   ```bash
+   SECRET="<isi INGATIN_TELEGRAM_WEBHOOK_SECRET>"
+   curl -s "https://api.telegram.org/bot<TOKEN>/setWebhook" \
+     -d "url=https://<host>/api/hooks/telegram/${SECRET}" \
+     -d "secret_token=${SECRET}"
+   ```
+
+4. Cek webhook: `curl -s "https://api.telegram.org/bot<TOKEN>/getWebhookInfo"`.
+
+### Daftarkan grup (allowlist via Master Data)
+
+1. Kirim `/id` di grup Telegram target → bot membalas **chat id** grup.
+2. Panel → **Master Data → "Grup Telegram Bot" → Tambah**:
+   - **Kode** = chat id (mis. `-1001234567890`)
+   - **Label** = nama grup (mis. `NOC Utama`)
+   - **Aktif** = on
+3. Grup langsung aktif; kirim `/help` di grup untuk memastikan.
+
+> Hanya admin (izin `masterdata.write`) yang dapat mengubah allowlist. Nonaktifkan
+> dengan mematikan toggle **Aktif** pada entri grup — tanpa menghapus.
+
+### Command
+
+| Command | Efek |
+|---|---|
+| `/open <judul> [\| <PIC>]` | Buat **Daily Task** (`pending`) |
+| `/ticket <judul> [\| <PIC>]` | Buat **tiket insiden** (mulai siklus SLA) |
+| `/list` | Daftar tugas aktif hari ini |
+| `/solved <REF>` | Tandai selesai (mis. `/solved DTK-2026-0007`) |
+| `/hold <REF>` | Tahan (menunggu konfirmasi pelanggan) |
+| `/rekap [dd/mm/yyyy]` | Rekap harian (default: hari ini WIB) |
+| `/id` | Lihat chat id grup |
+| `/help` | Panduan |
+
+### Troubleshooting
+
+| Gejala | Penyebab / tindakan |
+|---|---|
+| Bot tidak membalas | Webhook salah: `getWebhookInfo`; cek `INGATIN_TELEGRAM_WEBHOOK_SECRET` sama dengan `secret_token` |
+| "Grup ini belum terdaftar" | Tambahkan entri master data `telegram_chat` (Kode = chat id dari `/id`) |
+| Command tak diproses saat webhook di-retry | Normal: `bot_update_log` mencegah proses ganda |
+| "Tidak bisa memindahkan ... ke ..." | Transisi tidak sah menurut workflow; cek status item di panel |
+| "Terlalu banyak perintah" | Rate limit 20 command/menit per grup |
+
+Jejak command: tabel `bot_command_log` (`chat_id`, `command`, `result`, waktu).
 
 ---
 
@@ -265,3 +377,44 @@ Dry-run yang aman:
 ```
 
 Selalu jalankan `./scripts/backup.sh` sebelum uninstall.
+
+---
+
+## 11. SLA, KPI & Penanganan Tiket (F20/F21)
+
+### Siklus SLA
+Setiap tiket memiliki siklus SLA (`ticket_sla_cycles`): siklus 0 sejak dibuat,
+siklus 1.. setiap dibuka kembali. `closed_at` tetap ada; reopen menambah
+`reopened_at`. Riwayat tidak dihapus.
+
+```bash
+# Siklus terbuka (sedang berjalan)
+psql -h 127.0.0.1 -U ingatin -d ingatin -c \
+  "SELECT w.ref_no, c.cycle_no, c.opened_at, c.first_response_at
+   FROM ticket_sla_cycles c JOIN work_items w ON w.id=c.work_item_id
+   WHERE c.closed_at IS NULL ORDER BY c.opened_at"
+
+# Tiket ber-SLA breached
+psql -h 127.0.0.1 -U ingatin -d ingatin -c \
+  "SELECT ref_no, status, sla_state, sla_breached_at FROM work_items
+   WHERE sla_state='breached' AND NOT is_deleted"
+```
+
+| Kondisi | Tindakan |
+|---|---|
+| Banyak `breached` | Tinjau beban/penanganan; tambah penangan (kolom *Ikut Menangani*) |
+| `sla_state` tetap `none` | Worker `sla_tick` tidak jalan atau tiket tanpa siklus → periksa `docker compose logs worker` |
+| Ingin reset siklus | Admin: Force Unlock (membuka siklus baru + `reopen_count++`) |
+
+### Lampiran
+Disimpan di volume `ingatin_data` (`/app/data/attachments`). Pantau pemakaian disk:
+
+```bash
+docker run --rm -v ingatin_ingatin_data:/d alpine sh -c 'du -sh /d/attachments 2>/dev/null || echo "kosong"'
+```
+
+Batas ukuran diatur `INGATIN_ATTACHMENTS_MAX_MB` (default 50).
+
+### KPI
+Halaman **KPI & SLA** menampilkan metrik per periode; unduh CSV atau ekspor ke
+Google Sheets (konfigurasi di menu *Google Sheets*).

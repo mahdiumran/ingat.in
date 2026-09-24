@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ApiUser, EscalationPolicy, notificationApi, Target, WorkItem, workItemsApi } from '../api'
+import { ApiUser, EscalationPolicy, notificationApi, WorkItem, workItemsApi } from '../api'
 import {
   ConfirmDialog,
   EmptyState,
@@ -443,7 +443,7 @@ export function ReminderForm({
   onError: (msg: string) => void
 }) {
   const isEdit = !!entry
-  const targets = useAsync(() => notificationApi.targets(), [])
+  const targets = useAsync(() => notificationApi.targetOptions(), [])
   const policies = useAsync(() => notificationApi.policies(), [])
 
   const [title, setTitle] = useState(entry?.title ?? '')
@@ -654,7 +654,7 @@ export function ReminderForm({
             </label>
             <select id="rm-target" className="input" value={targetId} onChange={(e) => setTargetId(e.target.value)}>
               <option value="">— Default sistem (NOC) —</option>
-              {((targets.data?.targets ?? []) as Target[]).map((t) => (
+              {(targets.data?.targets ?? []).map((t) => (
                 <option key={t.id} value={t.id}>
                   {t.name}
                 </option>

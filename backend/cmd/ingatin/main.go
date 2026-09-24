@@ -25,13 +25,16 @@ import (
 	"time"
 
 	"ingatin/backend/internal/api"
+	"ingatin/backend/internal/attachments"
 	"ingatin/backend/internal/auth"
+	"ingatin/backend/internal/bot"
 	"ingatin/backend/internal/config"
 	"ingatin/backend/internal/crypto"
 	"ingatin/backend/internal/db"
 	"ingatin/backend/internal/models"
 	"ingatin/backend/internal/notify"
 	"ingatin/backend/internal/repository"
+	"ingatin/backend/internal/sheets"
 	"ingatin/backend/internal/worker"
 )
 
@@ -130,7 +133,19 @@ func runAPI(ctx context.Context, cfg *config.Config) error {
 
 	authMgr := auth.New(cfg, store)
 	notifier := notify.NewResolver(cfg, store)
-	srv := api.New(cfg, store, authMgr, notifier)
+	sheetQueue := sheets.NewQueue(cfg, store)
+	attachStore := attachments.New(cfg, store)
+
+	// F12: bot command Telegram (inbound). Aktif hanya bila secret webhook diisi.
+	var botDisp *bot.Dispatcher
+	if bot.Enabled(cfg) {
+		botDisp = bot.NewDispatcher(cfg, store, notifier, sheetQueue)
+		log.Printf("telegram bot: aktif (webhook)")
+	} else {
+		log.Printf("telegram bot: nonaktif (INGATIN_TELEGRAM_WEBHOOK_SECRET kosong)")
+	}
+
+	srv := api.New(cfg, store, authMgr, notifier, sheetQueue, attachStore, botDisp)
 
 	httpSrv := &http.Server{
 		Addr:              cfg.Addr,
@@ -180,7 +195,8 @@ func runWorker(ctx context.Context, cfg *config.Config) error {
 	resolver := notify.NewResolver(cfg, store)
 	outbox := notify.NewOutbox(cfg, store, resolver)
 	fanout := notify.NewFanout(store, outbox)
-	w := worker.New(cfg, store, outbox, fanout)
+	sheetQueue := sheets.NewQueue(cfg, store)
+	w := worker.New(cfg, store, outbox, fanout, sheetQueue)
 	w.Start()
 	defer w.Stop()
 

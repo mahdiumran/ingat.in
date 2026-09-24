@@ -52,6 +52,9 @@ type Payload struct {
 	SubjectName string
 	Category    string
 
+	// F24: referensi tugas harian sumber tiket (daily task -> tiket).
+	ParentRef string
+
 	// Pesan uji
 	TargetName string
 	Channel    string
@@ -152,6 +155,24 @@ func FallbackTemplate(key string) *models.NotificationTemplate {
 			Severity: models.SeverityInfo,
 			BodyTpl:  "📋 DAILY TASK BARU {{.RefNo}}\n{{.Title}}\n\nTanggal: {{dash .DueAt}}\nOwner: {{dash .Owner}}\n\nDeskripsi : {{or .Description \"—\"}}",
 		}
+	case TemplateTicketReopened:
+		return &models.NotificationTemplate{
+			Key:      key,
+			Severity: models.SeverityWarning,
+			BodyTpl:  "🔓 TIKET DIBUKA KEMBALI {{.RefNo}}\n{{.Title}}\n\nPrioritas: {{.Priority}}\nOwner: {{dash .Owner}}\nAlasan: {{dash .Notes}}\n\nDeskripsi : {{or .Description \"—\"}}",
+		}
+	case TemplateSLABreach:
+		return &models.NotificationTemplate{
+			Key:      key,
+			Severity: models.SeverityCritical,
+			BodyTpl:  "🚨 SLA TERLAMPAUI {{.RefNo}}\n{{.Title}}\n\nPrioritas: {{.Priority}}\nOwner: {{dash .Owner}}\nTerlewat: {{dash .Remaining}}",
+		}
+	case TemplateSLAWarning:
+		return &models.NotificationTemplate{
+			Key:      key,
+			Severity: models.SeverityWarning,
+			BodyTpl:  "⚠️ PERINGATAN SLA {{.RefNo}}\n{{.Title}}\n\nPrioritas: {{.Priority}}\nOwner: {{dash .Owner}}\nSisa: {{dash .Remaining}}",
+		}
 	case TemplateReminderOffset:
 		return &models.NotificationTemplate{
 			Key:      key,
@@ -170,6 +191,12 @@ func FallbackTemplate(key string) *models.NotificationTemplate {
 			Severity: models.SeverityCritical,
 			BodyTpl:  "🚨 TERLAMBAT — BELUM ADA AKTIVASI\n{{.Title}}\n\nSubjek: {{dash .SubjectName}}\nExpire: {{dash .ExpireAt}}\nPIC NOC: {{dash .PicNOC}}\n\nDeskripsi : {{or .Description \"—\"}}",
 		}
+	case TemplateRFSCreated:
+		return &models.NotificationTemplate{
+			Key:      key,
+			Severity: models.SeverityInfo,
+			BodyTpl:  "📅 RFS / EWO BARU {{.RefNo}}\n{{.Title}}\n\nCustomer: {{dash .CustomerName}}\nPaket: {{.ServicePackage}} / {{.Bandwidth}}\nTanggal Dibuat: {{.CreatedAt}}\nTenggat Waktu: {{dash .ExpireAt}}\nDibuat Oleh: {{dash .CreatedBy}}\n\nDeskripsi : {{or .Description \"—\"}}",
+		}
 	case TemplateRFSUpcoming:
 		return &models.NotificationTemplate{
 			Key:      key,
@@ -187,6 +214,18 @@ func FallbackTemplate(key string) *models.NotificationTemplate {
 			Key:      key,
 			Severity: models.SeverityCritical,
 			BodyTpl:  "🚨 RFS TERLEWAT\nCustomer: {{dash .CustomerName}}\nRFS: {{dash .ExpireAt}}\nTerlewat: {{dash .Remaining}}\nPIC NOC: {{dash .PicNOC}}\n\nDeskripsi : {{or .Description \"—\"}}",
+		}
+	case TemplateDailySummary:
+		return &models.NotificationTemplate{
+			Key:      key,
+			Severity: models.SeverityInfo,
+			BodyTpl:  "📊 RINGKASAN TUGAS — {{.CreatedAt}}\n\n{{.Description}}",
+		}
+	case TemplateTicketFromDaily:
+		return &models.NotificationTemplate{
+			Key:      key,
+			Severity: models.SeverityWarning,
+			BodyTpl:  "🎫 TIKET DARI DAILY TASK {{.RefNo}}\n{{.Title}}\n\nPrioritas: {{.Priority}}\nOwner: {{dash .Owner}}\nDari tugas: {{dash .ParentRef}}\n\nDeskripsi : {{or .Description \"—\"}}",
 		}
 	case TemplateTestMessage:
 		return &models.NotificationTemplate{
@@ -213,9 +252,16 @@ const (
 	TemplateRFSUpcoming      = "RFS_UPCOMING"
 	TemplateRFSToday         = "RFS_TODAY"
 	TemplateRFSLate          = "RFS_LATE"
-	TemplateTestMessage      = "TEST_MESSAGE"
-	TemplateSLAWarning       = "SLA_WARNING"
-	TemplateSLABreach        = "SLA_BREACH"
+	// TemplateRFSCreated (F30) adalah notifikasi PEMBUATAN RFS/EWO.
+	TemplateRFSCreated     = "RFS_CREATED"
+	TemplateTestMessage    = "TEST_MESSAGE"
+	TemplateSLAWarning     = "SLA_WARNING"
+	TemplateSLABreach      = "SLA_BREACH"
+	TemplateTicketReopened = "TICKET_REOPENED"
+	// F24: notifikasi tiket yang dibuat dari Daily Task.
+	TemplateTicketFromDaily = "TICKET_FROM_DAILY"
+	// TemplateDailySummary adalah ringkasan harian task pending/in_progress/done.
+	TemplateDailySummary = "DAILY_SUMMARY"
 )
 
 // FormatWIB memformat waktu ke WIB untuk ditampilkan pada pesan notifikasi.

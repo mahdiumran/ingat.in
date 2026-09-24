@@ -261,11 +261,11 @@ var permCache = &rolePermissionCache{}
 
 // PermissionAllowed melaporkan apakah role boleh melakukan action.
 //
-// Aturan: admin SELALU boleh (dijaga di sini agar tidak dapat dikunci sendiri),
-// peran lain mengikuti matriks role_permissions. Bila cache belum termuat,
-// nilainya diambil dari database.
+// Aturan: peran super user (is_super, mis. admin) SELALU boleh (dijaga di sini
+// agar tidak dapat dikunci sendiri); peran lain mengikuti matriks
+// role_permissions. Bila cache belum termuat, nilainya diambil dari database.
 func (s *Store) PermissionAllowed(ctx context.Context, role, action string) bool {
-	if role == models.RoleAdmin {
+	if s.RoleIsSuper(ctx, role) {
 		return true
 	}
 	if !permCache.loaded {
@@ -283,6 +283,44 @@ func (s *Store) PermissionAllowed(ctx context.Context, role, action string) bool
 		return false
 	}
 	return permCache.m[role+"|"+action]
+}
+
+// EffectivePermissions mengembalikan daftar action yang diizinkan untuk role.
+// Super user selalu mendapat seluruh action yang dikenal panel.
+func (s *Store) EffectivePermissions(ctx context.Context, role string) []string {
+	if s.RoleIsSuper(ctx, role) {
+		return append([]string(nil), knownActions...)
+	}
+	rows, err := s.ListRolePermissions(ctx)
+	if err != nil {
+		return []string{}
+	}
+	out := []string{}
+	for _, r := range rows {
+		if r.Role == role && r.Allowed {
+			out = append(out, r.Action)
+		}
+	}
+	return out
+}
+
+// knownActions mencerminkan daftar aksi pada matriks izin (lihat api.PermissionActions).
+var knownActions = []string{
+	"items.write", "providers.view", "providers.write", "masterdata.write", "users.write",
+	"teams.write", "roles.write", "kpi.view",
+}
+
+// RoleIsSuper melaporkan apakah role adalah super user (is_super).
+// Fallback: role "admin" diperlakukan super meski tabel roles belum termigrasi.
+func (s *Store) RoleIsSuper(ctx context.Context, role string) bool {
+	if role == models.RoleAdmin {
+		return true
+	}
+	r, err := s.GetRole(ctx, role)
+	if err != nil {
+		return false
+	}
+	return r.IsSuper
 }
 
 // InvalidatePermissionCache dipanggil setelah matriks izin diubah.

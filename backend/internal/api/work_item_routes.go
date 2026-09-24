@@ -16,6 +16,7 @@ import (
 	"ingatin/backend/internal/models"
 	"ingatin/backend/internal/notify"
 	"ingatin/backend/internal/repository"
+	"ingatin/backend/internal/sheets"
 	"ingatin/backend/internal/workitems"
 )
 
@@ -53,6 +54,8 @@ type taskDetailsRequest struct {
 	Checklist       []models.ChecklistItem `json:"checklist"`
 	EstimateMinutes *int                   `json:"estimate_minutes"`
 	ProgressPct     *int                   `json:"progress_pct"`
+	// F24: jenis daily task (master data kind `daily_task_type`).
+	DailyTaskType string `json:"daily_task_type"`
 }
 
 type reminderDetailsRequest struct {
@@ -70,8 +73,26 @@ type rfsDetailsRequest struct {
 	Bandwidth      string `json:"bandwidth"`
 	PicNOC         string `json:"pic_noc"`
 	PicSales       string `json:"pic_sales"`
-	Site           string `json:"site"`
-	InstallStage   string `json:"install_stage"`
+	// F25: PIC berupa tim. Kosong/null mengosongkan.
+	PicTeamID    *string `json:"pic_team_id"`
+	Site         string  `json:"site"`
+	InstallStage string  `json:"install_stage"`
+	// F23: catatan penanganan (modal Troubleshoot). Pointer agar PATCH parsial.
+	IssueFound      *string `json:"issue_found"`
+	Troubleshooting *string `json:"troubleshooting"`
+	ActionSolution  *string `json:"action_solution"`
+	// F25: data teknis aktivasi (upsert).
+	Activation *rfsActivationRequest `json:"activation"`
+}
+
+// rfsActivationRequest adalah data teknis aktivasi RFS (F25).
+type rfsActivationRequest struct {
+	IPAddress     string `json:"ip_address"`
+	VLanDetail    string `json:"vlan_detail"`
+	InterfacePort string `json:"interface_port"`
+	BandwidthTest string `json:"bandwidth_test"`
+	PingTest      string `json:"ping_test"`
+	PacketLoss    string `json:"packet_loss"`
 }
 
 type ticketDetailsRequest struct {
@@ -81,6 +102,10 @@ type ticketDetailsRequest struct {
 	Impact          string `json:"impact"`
 	Urgency         string `json:"urgency"`
 	AssignmentGroup string `json:"assignment_group"`
+	// F21: catatan penanganan (pointer agar PATCH parsial tidak menghapus).
+	IssueFound      *string `json:"issue_found"`
+	Troubleshooting *string `json:"troubleshooting"`
+	ActionSolution  *string `json:"action_solution"`
 }
 
 type workItemUpdateRequest struct {
@@ -109,6 +134,8 @@ type workItemUpdateRequest struct {
 type statusChangeRequest struct {
 	Status string `json:"status"`
 	Note   string `json:"note"`
+	// F24: hasil penyelesaian Daily Task ("normal"/"bermasalah").
+	ResultStatus string `json:"result_status"`
 }
 
 type commentCreateRequest struct {
@@ -169,6 +196,18 @@ func (s *Server) handleListWorkItems(w http.ResponseWriter, r *http.Request) {
 		params.Offset = v
 	}
 	params.Descending = q.Get("desc") != "false"
+
+	// F31: pembatasan per tim untuk task & daily_task.
+	// Non-admin hanya melihat item timnya (atau miliknya bila tanpa tim).
+	if isTeamScopedType(params.ItemType) {
+		if u := userFrom(r); u != nil && !s.isSuper(r, u) {
+			if u.TeamID != nil {
+				params.TeamID = u.TeamID
+			} else {
+				params.OwnerScopeUsername = u.Username
+			}
+		}
+	}
 
 	// Daily Task: filter satu hari (zona WIB) + carry-over opsional.
 	// ?date=YYYY-MM-DD (default: hari ini WIB), ?carry_over=true
@@ -233,6 +272,10 @@ func (s *Server) handleGetWorkItem(w http.ResponseWriter, r *http.Request) {
 	item, err := s.store.GetWorkItem(r.Context(), id)
 	if err != nil {
 		s.itemError(w, err)
+		return
+	}
+	if !s.canViewItemTeam(r, userFrom(r), item) {
+		writeErr(w, http.StatusForbidden, "tidak berhak melihat item ini")
 		return
 	}
 
@@ -304,6 +347,13 @@ func (s *Server) handleCreateWorkItem(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "team_id tidak valid")
 		return
 	}
+	// F31: task & daily_task dipartisi per tim. Non-admin selalu memakai tim
+	// pengguna (input team_id diabaikan); admin boleh memilih tim mana pun.
+	if isTeamScopedType(req.ItemType) {
+		if u := userFrom(r); u != nil && !s.isSuper(r, u) {
+			teamID = u.TeamID
+		}
+	}
 	targetID, err := parseOptionalUUID(req.TargetID)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "target_id tidak valid")
@@ -324,6 +374,15 @@ func (s *Server) handleCreateWorkItem(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "due_at tidak valid (RFC3339)")
 		return
+	}
+	// F21: Daily Task tanpa tenggat → default 23:59 WIB pada tanggal harinya
+	// (tanggal diambil dari start_at, atau hari ini bila start_at kosong).
+	if dueAt == nil && req.ItemType == models.ItemDailyTask {
+		base := time.Now()
+		if startAt != nil {
+			base = *startAt
+		}
+		dueAt = defaultDailyTaskDue(base)
 	}
 	expireAt, err := parseOptionalTime(req.ExpireAt)
 	if err != nil {
@@ -388,6 +447,13 @@ func (s *Server) handleCreateWorkItem(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 
+		// F20: tiket memulai siklus SLA pertama (siklus 0).
+		if wi.IsTicket() {
+			if err := s.store.CreateInitialSLACycle(r.Context(), tx, wi.ID, wi.CreatedAt); err != nil {
+				return err
+			}
+		}
+
 		// Event 'created' wajib: sumber timeline + audit + perhitungan SLA.
 		return workitems.AppendEvent(r.Context(), tx, workitems.EventInput{
 			WorkItemID: wi.ID.String(),
@@ -419,6 +485,9 @@ func (s *Server) handleCreateWorkItem(w http.ResponseWriter, r *http.Request) {
 	// tersimpan dan operator dapat mengirim ulang. Error dicatat ke log.
 	s.enqueueCreated(r, full)
 
+	// F18: catat Todo Task ke spreadsheet (best-effort, task saja).
+	s.syncSheet(r, full, "create")
+
 	s.audit(r, "", "item.create", "work_item", full.ID.String(), map[string]any{
 		"ref_no": full.RefNo, "item_type": full.ItemType,
 	}, true)
@@ -430,14 +499,10 @@ func (s *Server) handleCreateWorkItem(w http.ResponseWriter, r *http.Request) {
 // Kunci event memakai id item sehingga pengiriman bersifat idempoten: memanggil
 // ulang tidak akan menggandakan pesan.
 func (s *Server) enqueueCreated(r *http.Request, item *models.WorkItem) {
-	targetID := item.TargetID
-	if targetID == nil {
-		// Fallback ke target default agar notifikasi pembuatan tetap terkirim.
-		def, err := s.store.DefaultTargetID(r.Context())
-		if err != nil {
-			return
-		}
-		targetID = def
+	// F25: resolusi target: item → tim (mis. PIC team RFS) → default.
+	targetID, err := s.store.ResolveItemTargetID(r.Context(), item)
+	if err != nil || targetID == nil {
+		return
 	}
 
 	tplKey, severity := createdTemplateFor(item.ItemType)
@@ -488,12 +553,71 @@ func (s *Server) enqueueCreated(r *http.Request, item *models.WorkItem) {
 	}
 }
 
+// syncSheet mengantrekan Todo Task dan Daily Task ke sinkronisasi spreadsheet
+// (F18). Best-effort: kegagalan enqueue tidak boleh menggagalkan operasi utama —
+// item sudah tersimpan dan worker akan mencoba lagi pada perubahan berikutnya.
+func (s *Server) syncSheet(r *http.Request, item *models.WorkItem, action string) {
+	if s.sheets == nil || item == nil || !isSheetSyncedType(item.ItemType) {
+		return
+	}
+
+	op := models.SheetOpAppend
+	if action != "create" {
+		op = models.SheetOpUpdate
+	}
+
+	payload := map[string]any{
+		"item_type":      item.ItemType,
+		"ref_no":         item.RefNo,
+		"title":          item.Title,
+		"description":    item.Description,
+		"priority":       item.Priority,
+		"status":         item.Status,
+		"owner":          item.OwnerUsername,
+		"created_by":     item.CreatedBy,
+		"updated_by":     item.UpdatedByUsername,
+		"device_ref":     item.DeviceRef,
+		"tags":           strings.Join(item.Tags, ", "),
+		"due_at_wib":     notify.FormatWIB(item.DueAt),
+		"created_at_wib": notify.FormatWIB(&item.CreatedAt),
+		// F27: waktu selesai + aktor penyelesai.
+		"completed_at_wib": notify.FormatWIB(item.CompletedAt),
+		"completed_by":     item.CompletedBy,
+	}
+	if item.Task != nil {
+		payload["completion_note"] = item.Task.CompletionNote
+	}
+
+	if _, err := s.sheets.Enqueue(r.Context(), sheets.EnqueueParams{
+		WorkItemID: item.ID,
+		RefNo:      item.RefNo,
+		Op:         op,
+		Action:     action,
+		Payload:    payload,
+	}); err != nil {
+		log.Printf("api: gagal mengantrikan sinkronisasi spreadsheet %s: %v", item.RefNo, err)
+	}
+}
+
+// isSheetSyncedType melaporkan apakah item_type ikut disinkronkan ke spreadsheet.
+//
+// Cakupan F18: Todo Task dan Daily Task (pekerjaan operasional NOC). Tiket,
+// reminder, dan RFS tidak disinkronkan.
+func isSheetSyncedType(itemType string) bool {
+	switch itemType {
+	case models.ItemTask, models.ItemDailyTask:
+		return true
+	default:
+		return false
+	}
+}
+
 // createdTemplateFor memilih template notifikasi pembuatan per tipe.
 func createdTemplateFor(itemType string) (string, string) {
 	switch itemType {
 	case models.ItemRFS:
-		// RFS memakai template pengingat (created hanya konfirmasi).
-		return notify.TemplateRFSUpcoming, models.SeverityInfo
+		// F30: pembuatan RFS/EWO memakai template khusus (bukan pengingat).
+		return notify.TemplateRFSCreated, models.SeverityInfo
 	case models.ItemReminder:
 		return notify.TemplateReminderOffset, models.SeverityInfo
 	case models.ItemDailyTask:
@@ -506,14 +630,16 @@ func createdTemplateFor(itemType string) (string, string) {
 // createExtension membuat baris extension sesuai item_type di dalam transaksi.
 func (s *Server) createExtension(r *http.Request, tx pgx.Tx, id uuid.UUID, req workItemCreateRequest) error {
 	switch req.ItemType {
-	case models.ItemTask:
+	case models.ItemTask, models.ItemDailyTask:
 		var checklist []models.ChecklistItem
 		var estimate *int
+		dailyType := ""
 		if req.Task != nil {
 			checklist = req.Task.Checklist
 			estimate = req.Task.EstimateMinutes
+			dailyType = strings.TrimSpace(req.Task.DailyTaskType)
 		}
-		return s.store.CreateTaskDetails(r.Context(), tx, id, checklist, estimate)
+		return s.store.CreateTaskDetails(r.Context(), tx, id, checklist, estimate, dailyType)
 
 	case models.ItemReminder:
 		d := reminderDetailsRequest{
@@ -533,16 +659,28 @@ func (s *Server) createExtension(r *http.Request, tx pgx.Tx, id uuid.UUID, req w
 	case models.ItemRFS:
 		var d repository.CreateRFSDetailsParams
 		if req.RFS != nil {
+			var picTeam *uuid.UUID
+			if req.RFS.PicTeamID != nil && strings.TrimSpace(*req.RFS.PicTeamID) != "" {
+				parsed, perr := uuid.Parse(strings.TrimSpace(*req.RFS.PicTeamID))
+				if perr != nil {
+					return fmt.Errorf("pic_team_id tidak valid: %w", errValidation)
+				}
+				picTeam = &parsed
+			}
 			d = repository.CreateRFSDetailsParams{
-				CustomerName:   req.RFS.CustomerName,
-				ServiceID:      req.RFS.ServiceID,
-				ServicePackage: req.RFS.ServicePackage,
-				Bandwidth:      req.RFS.Bandwidth,
-				PicNOC:         req.RFS.PicNOC,
-				PicSales:       req.RFS.PicSales,
-				SalesUsername:  currentUsername(r),
-				Site:           req.RFS.Site,
-				InstallStage:   req.RFS.InstallStage,
+				CustomerName:    req.RFS.CustomerName,
+				ServiceID:       req.RFS.ServiceID,
+				ServicePackage:  req.RFS.ServicePackage,
+				Bandwidth:       req.RFS.Bandwidth,
+				PicNOC:          req.RFS.PicNOC,
+				PicSales:        req.RFS.PicSales,
+				PicTeamID:       picTeam,
+				SalesUsername:   currentUsername(r),
+				Site:            req.RFS.Site,
+				InstallStage:    req.RFS.InstallStage,
+				IssueFound:      derefStr(req.RFS.IssueFound),
+				Troubleshooting: derefStr(req.RFS.Troubleshooting),
+				ActionSolution:  derefStr(req.RFS.ActionSolution),
 			}
 		}
 		return s.store.CreateRFSDetails(r.Context(), tx, id, d)
@@ -592,7 +730,7 @@ func (s *Server) handleUpdateWorkItem(w http.ResponseWriter, r *http.Request) {
 	// pembuat/owner item atau admin. Field operasional lain (prioritas, owner,
 	// tenggat, tag, dsb.) tetap dapat diubah oleh operator.
 	if (req.Description != nil || req.RFS != nil || req.Task != nil || req.Ticket != nil || req.Reminder != nil) &&
-		!canManageItem(userFrom(r), item) {
+		!s.canWriteItemTeam(r, userFrom(r), item) {
 		writeErr(w, http.StatusForbidden, "hanya pembuat item atau admin yang dapat mengubah deskripsi/detail")
 		return
 	}
@@ -682,6 +820,8 @@ func (s *Server) handleUpdateWorkItem(w http.ResponseWriter, r *http.Request) {
 
 	err = s.store.Tx(r.Context(), func(tx pgx.Tx) error {
 		if len(fields) > 0 {
+			// Catat operator yang melakukan perubahan terakhir.
+			fields["updated_by_username"] = actor
 			if err := s.store.UpdateWorkItemFields(r.Context(), tx, id, fields); err != nil {
 				return err
 			}
@@ -692,21 +832,48 @@ func (s *Server) handleUpdateWorkItem(w http.ResponseWriter, r *http.Request) {
 			if item.ItemType != models.ItemRFS {
 				return errors.New("field rfs hanya berlaku untuk item_type=rfs")
 			}
+			var picTeam *uuid.UUID
+			if req.RFS.PicTeamID != nil && strings.TrimSpace(*req.RFS.PicTeamID) != "" {
+				parsed, perr := uuid.Parse(strings.TrimSpace(*req.RFS.PicTeamID))
+				if perr != nil {
+					return fmt.Errorf("pic_team_id tidak valid: %w", errValidation)
+				}
+				picTeam = &parsed
+			}
 			if err := s.store.UpdateRFSDetails(r.Context(), tx, id, repository.UpdateRFSDetailsParams{
-				CustomerName:   strPtrOrNil(req.RFS.CustomerName),
-				ServicePackage: strPtrOrNil(req.RFS.ServicePackage),
-				Bandwidth:      strPtrOrNil(req.RFS.Bandwidth),
-				PicNOC:         strPtrOrNil(req.RFS.PicNOC),
-				PicSales:       strPtrOrNil(req.RFS.PicSales),
-				Site:           strPtrOrNil(req.RFS.Site),
-				InstallStage:   strPtrOrNil(req.RFS.InstallStage),
+				CustomerName:    strPtrOrNil(req.RFS.CustomerName),
+				ServicePackage:  strPtrOrNil(req.RFS.ServicePackage),
+				Bandwidth:       strPtrOrNil(req.RFS.Bandwidth),
+				PicNOC:          strPtrOrNil(req.RFS.PicNOC),
+				PicSales:        strPtrOrNil(req.RFS.PicSales),
+				Site:            strPtrOrNil(req.RFS.Site),
+				InstallStage:    strPtrOrNil(req.RFS.InstallStage),
+				IssueFound:      req.RFS.IssueFound,
+				Troubleshooting: req.RFS.Troubleshooting,
+				ActionSolution:  req.RFS.ActionSolution,
+				PicTeamID:       picTeam,
+				SetPicTeam:      req.RFS.PicTeamID != nil,
 			}); err != nil {
 				return err
 			}
+			// F25: simpan data teknis aktivasi bila dikirim.
+			if req.RFS.Activation != nil {
+				a := req.RFS.Activation
+				if err := s.store.UpsertRFSActivation(r.Context(), tx, id, repository.RFSActivationInput{
+					IPAddress:     a.IPAddress,
+					VLanDetail:    a.VLanDetail,
+					InterfacePort: a.InterfacePort,
+					BandwidthTest: a.BandwidthTest,
+					PingTest:      a.PingTest,
+					PacketLoss:    a.PacketLoss,
+				}, actor); err != nil {
+					return err
+				}
+			}
 		}
 		if req.Task != nil {
-			if item.ItemType != models.ItemTask {
-				return errors.New("field task hanya berlaku untuk item_type=task")
+			if item.ItemType != models.ItemTask && item.ItemType != models.ItemDailyTask {
+				return errors.New("field task hanya berlaku untuk item_type=task atau daily_task")
 			}
 			if err := s.store.UpdateTaskDetails(r.Context(), tx, id,
 				req.Task.Checklist, req.Task.ProgressPct); err != nil {
@@ -727,6 +894,10 @@ func (s *Server) handleUpdateWorkItem(w http.ResponseWriter, r *http.Request) {
 				Impact:          strPtrOrNil(req.Ticket.Impact),
 				Urgency:         strPtrOrNil(req.Ticket.Urgency),
 				AssignmentGroup: strPtrOrNil(req.Ticket.AssignmentGroup),
+				// F21: catatan penanganan.
+				IssueFound:      req.Ticket.IssueFound,
+				Troubleshooting: req.Ticket.Troubleshooting,
+				ActionSolution:  req.Ticket.ActionSolution,
 			}); err != nil {
 				return err
 			}
@@ -786,6 +957,10 @@ func (s *Server) handleUpdateWorkItem(w http.ResponseWriter, r *http.Request) {
 		"ref_no": updated.RefNo,
 	}, true)
 	_ = wf
+
+	// F18: perbarui baris spreadsheet bila Todo Task berubah (best-effort).
+	s.syncSheet(r, updated, "updated")
+
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -813,6 +988,11 @@ func (s *Server) handleChangeStatus(w http.ResponseWriter, r *http.Request) {
 		s.itemError(w, err)
 		return
 	}
+	// F31: task & daily_task hanya dapat diubah oleh tim yang sama.
+	if !s.canWriteItemTeam(r, userFrom(r), item) {
+		writeErr(w, http.StatusForbidden, "tidak berhak mengubah item ini")
+		return
+	}
 
 	wf := workitems.WorkflowFor(item.ItemType)
 	if wf == nil {
@@ -833,7 +1013,7 @@ func (s *Server) handleChangeStatus(w http.ResponseWriter, r *http.Request) {
 	actor := currentUsername(r)
 	now := time.Now().UTC()
 
-	fields := map[string]any{"status": req.Status}
+	fields := map[string]any{"status": req.Status, "updated_by_username": actor}
 	switch {
 	case result.IsClosing && item.ClosedAt == nil:
 		fields["closed_at"] = now
@@ -865,6 +1045,20 @@ func (s *Server) handleChangeStatus(w http.ResponseWriter, r *http.Request) {
 		if err := s.store.UpdateWorkItemFields(r.Context(), tx, id, fields); err != nil {
 			return err
 		}
+		// Keterangan penyelesaian Daily Task (ditampilkan di timeline + sheet).
+		if item.ItemType == models.ItemDailyTask && req.Status == "done" &&
+			(strings.TrimSpace(req.Note) != "" || strings.TrimSpace(req.ResultStatus) != "") {
+			if err := s.store.SetTaskCompletionResult(r.Context(), tx, id,
+				strings.TrimSpace(req.Note), strings.TrimSpace(req.ResultStatus)); err != nil {
+				return err
+			}
+		}
+		// F20: perbarui siklus SLA tiket.
+		if item.IsTicket() {
+			if err := s.updateSLACycleOnStatus(r.Context(), tx, item, req.Status, result, actor, now, wf.InitialState); err != nil {
+				return err
+			}
+		}
 		return workitems.AppendEvent(r.Context(), tx, workitems.EventInput{
 			WorkItemID: id.String(),
 			EventType:  eventType,
@@ -888,6 +1082,15 @@ func (s *Server) handleChangeStatus(w http.ResponseWriter, r *http.Request) {
 	s.audit(r, "", "item.status_change", "work_item", id.String(), map[string]any{
 		"ref_no": updated.RefNo, "from": item.Status, "to": req.Status,
 	}, true)
+
+	// F18: perbarui status pada spreadsheet (best-effort, task saja).
+	s.syncSheet(r, updated, "status_changed")
+
+	// F22: pemicu ringkasan tugas bila mode = on_change (best-effort).
+	if item.ItemType == models.ItemDailyTask && item.Status != req.Status {
+		s.maybeSendDailySummary(r.Context(), now)
+	}
+
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -937,7 +1140,7 @@ func (s *Server) handleForceStatus(w http.ResponseWriter, r *http.Request) {
 	actor := currentUsername(r)
 	now := time.Now().UTC()
 
-	fields := map[string]any{"status": req.Status}
+	fields := map[string]any{"status": req.Status, "updated_by_username": actor}
 	// Kelola closed_at/resolved_at konsisten dengan transisi normal.
 	if isTerminalState(wf, req.Status) {
 		if item.ClosedAt == nil {
@@ -1001,7 +1204,7 @@ func (s *Server) handleDeleteWorkItem(w http.ResponseWriter, r *http.Request) {
 		s.itemError(w, err)
 		return
 	}
-	if !canManageItem(userFrom(r), item) {
+	if !s.canWriteItemTeam(r, userFrom(r), item) {
 		writeErr(w, http.StatusForbidden, "hanya pembuat item atau admin yang dapat menghapus")
 		return
 	}
@@ -1014,7 +1217,45 @@ func (s *Server) handleDeleteWorkItem(w http.ResponseWriter, r *http.Request) {
 	s.audit(r, "", "item.delete", "work_item", id.String(), map[string]any{
 		"ref_no": item.RefNo, "item_type": item.ItemType, "deleted_total": deleted,
 	}, true)
+
+	// F18: tandai baris spreadsheet sebagai "Dihapus" agar riwayat tetap utuh.
+	s.syncSheetDeleted(r, item)
+
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": deleted})
+}
+
+// syncSheetDeleted menandai baris spreadsheet milik item yang dihapus.
+//
+// Baris TIDAK dihapus dari spreadsheet agar riwayat kerjaan tetap lengkap;
+// kolom Status ditulis "Dihapus". Best-effort seperti jalur sinkronisasi lain.
+func (s *Server) syncSheetDeleted(r *http.Request, item *models.WorkItem) {
+	if s.sheets == nil || item == nil || !isSheetSyncedType(item.ItemType) {
+		return
+	}
+	payload := map[string]any{
+		"item_type":      item.ItemType,
+		"ref_no":         item.RefNo,
+		"title":          item.Title,
+		"description":    item.Description,
+		"priority":       item.Priority,
+		"status":         item.Status,
+		"owner":          item.OwnerUsername,
+		"created_by":     item.CreatedBy,
+		"device_ref":     item.DeviceRef,
+		"tags":           strings.Join(item.Tags, ", "),
+		"due_at_wib":     notify.FormatWIB(item.DueAt),
+		"created_at_wib": notify.FormatWIB(&item.CreatedAt),
+		"deleted":        true,
+	}
+	if _, err := s.sheets.Enqueue(r.Context(), sheets.EnqueueParams{
+		WorkItemID: item.ID,
+		RefNo:      item.RefNo,
+		Op:         models.SheetOpUpdate,
+		Action:     "deleted",
+		Payload:    payload,
+	}); err != nil {
+		log.Printf("api: gagal mengantrikan penandaan hapus spreadsheet %s: %v", item.RefNo, err)
+	}
 }
 
 /* ---------------------------------------------------------------------------
@@ -1034,6 +1275,14 @@ func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 		if v, err := strconv.Atoi(raw); err == nil && v > 0 && v <= 1000 {
 			limit = v
 		}
+	}
+	// F31: pastikan berhak melihat item sebelum menampilkan timeline.
+	if item, err := s.store.GetWorkItem(r.Context(), id); err != nil {
+		s.itemError(w, err)
+		return
+	} else if !s.canViewItemTeam(r, userFrom(r), item) {
+		writeErr(w, http.StatusForbidden, "tidak berhak melihat item ini")
+		return
 	}
 	events, err := s.store.ListEvents(r.Context(), id, limit)
 	if err != nil {
@@ -1062,8 +1311,13 @@ func (s *Server) handleAddComment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Pastikan item ada & belum dihapus.
-	if _, err := s.store.GetWorkItem(r.Context(), id); err != nil {
+	item, err := s.store.GetWorkItem(r.Context(), id)
+	if err != nil {
 		s.itemError(w, err)
+		return
+	}
+	if !s.canViewItemTeam(r, userFrom(r), item) {
+		writeErr(w, http.StatusForbidden, "tidak berhak mengomentari item ini")
 		return
 	}
 
@@ -1074,7 +1328,7 @@ func (s *Server) handleAddComment(w http.ResponseWriter, r *http.Request) {
 	actor := currentUsername(r)
 
 	var comment *models.Comment
-	err := s.store.Tx(r.Context(), func(tx pgx.Tx) error {
+	err = s.store.Tx(r.Context(), func(tx pgx.Tx) error {
 		c, err := s.store.CreateComment(r.Context(), tx, id, actor, req.Body, isInternal)
 		if err != nil {
 			return err
@@ -1102,7 +1356,17 @@ func (s *Server) handleAddComment(w http.ResponseWriter, r *http.Request) {
 //
 // GET /api/dashboard
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
-	summary, err := s.store.DashboardSummary(r.Context())
+	// F31: non-admin melihat ringkasan task & daily_task yang terbatas pada
+	// timnya; tipe lain (rfs/tiket/reminder) tetap global.
+	var scope *repository.DashboardScope
+	if u := userFrom(r); u != nil && !s.isSuper(r, u) {
+		if u.TeamID != nil {
+			scope = &repository.DashboardScope{TeamID: u.TeamID}
+		} else {
+			scope = &repository.DashboardScope{Username: u.Username}
+		}
+	}
+	summary, err := s.store.DashboardSummary(r.Context(), scope)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -1235,6 +1499,14 @@ func strPtrOrNil(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// derefStr mengembalikan nilai string dari pointer, "" bila nil.
+func derefStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // wibLocation adalah zona waktu tampilan/operasional (Asia/Jakarta).

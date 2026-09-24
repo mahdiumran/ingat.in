@@ -247,6 +247,7 @@ func TestValidEventTypesMatchConstants(t *testing.T) {
 		EventCommented, EventAttachmentAdded, EventDueChanged, EventExpireChanged,
 		EventSLAWarning, EventSLABreached, EventSLAPaused, EventSLAResumed,
 		EventResolved, EventClosed, EventCancelled, EventNotified, EventNotifyFailed,
+		EventUnlocked,
 	}
 	for _, e := range all {
 		if !validEventTypes[e] {

@@ -17,29 +17,38 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"ingatin/backend/internal/attachments"
 	"ingatin/backend/internal/auth"
+	"ingatin/backend/internal/bot"
 	"ingatin/backend/internal/config"
 	"ingatin/backend/internal/notify"
 	"ingatin/backend/internal/repository"
+	"ingatin/backend/internal/sheets"
 )
 
 // Server menampung seluruh dependency HTTP.
 type Server struct {
-	cfg      *config.Config
-	store    *repository.Store
-	auth     *auth.Manager
-	notifier *notify.Resolver
-	version  string
+	cfg         *config.Config
+	store       *repository.Store
+	auth        *auth.Manager
+	notifier    *notify.Resolver
+	sheets      *sheets.Queue
+	attachments *attachments.Store
+	bot         *bot.Dispatcher
+	version     string
 }
 
 // New membuat Server baru.
-func New(cfg *config.Config, store *repository.Store, authMgr *auth.Manager, notifier *notify.Resolver) *Server {
+func New(cfg *config.Config, store *repository.Store, authMgr *auth.Manager, notifier *notify.Resolver, sheetQueue *sheets.Queue, attachStore *attachments.Store, botDisp *bot.Dispatcher) *Server {
 	return &Server{
-		cfg:      cfg,
-		store:    store,
-		auth:     authMgr,
-		notifier: notifier,
-		version:  cfg.AppVersion,
+		cfg:         cfg,
+		store:       store,
+		auth:        authMgr,
+		notifier:    notifier,
+		sheets:      sheetQueue,
+		attachments: attachStore,
+		bot:         botDisp,
+		version:     cfg.AppVersion,
 	}
 }
 
@@ -65,6 +74,10 @@ func (s *Server) Handler() http.Handler {
 		api.Post("/auth/refresh", s.handleRefresh)
 		api.Post("/auth/logout", s.handleLogout)
 
+		// F12: webhook Telegram command bot (publik, diamankan secret).
+		// Hanya didaftarkan bila bot dikonfigurasi (secret terisi).
+		s.registerTelegramHookRoute(api)
+
 		// ---------------------------------------------------------------
 		// Terautentikasi
 		// ---------------------------------------------------------------
@@ -80,11 +93,18 @@ func (s *Server) Handler() http.Handler {
 			pr.Get("/teams", s.handleListTeams)
 			pr.Get("/organizations", s.handleListOrganizations)
 
-			// F4: notifikasi (baca untuk semua role; tulis khusus admin/noc)
-			pr.Get("/providers", s.handleListProviders)
-			pr.Get("/targets", s.handleListTargets)
-			pr.Get("/templates", s.handleListTemplates)
+			// F4: notifikasi. Baca Notification Center (providers/targets/templates)
+			// dibatasi izin providers.view (F32). Escalation Policies tetap terbuka.
+			// Daftar target ringan (id+nama) untuk dropdown form tetap terbuka.
+			pr.Get("/targets/options", s.handleListTargetOptions)
 			pr.Get("/policies", s.handleListPolicies)
+
+			pr.Group(func(nv chi.Router) {
+				nv.Use(s.requirePermission("providers.view"))
+				nv.Get("/providers", s.handleListProviders)
+				nv.Get("/targets", s.handleListTargets)
+				nv.Get("/templates", s.handleListTemplates)
+			})
 
 			// F5–F7: work items
 			pr.Get("/items", s.handleListWorkItems)
@@ -96,38 +116,94 @@ func (s *Server) Handler() http.Handler {
 			pr.Post("/items/{id}/notify", s.handleTriggerNotification)
 			pr.Get("/items/{id}/events", s.handleListEvents)
 			pr.Post("/items/{id}/comments", s.handleAddComment)
+
+			// F20: assign & penangan tambahan.
+			pr.Post("/items/{id}/assign", s.handleAssignItem)
+			pr.Post("/items/{id}/collaborators", s.handleAddCollaborator)
+			pr.Delete("/items/{id}/collaborators/{username}", s.handleRemoveCollaborator)
+
+			// F23: Aktivasi/EWO (RFS) — cancel & delete ber-alasan.
+			pr.Post("/items/{id}/rfs-cancel", s.handleRFSCancel)
+			pr.Post("/items/{id}/rfs-delete", s.handleRFSDelete)
+
+			// F24: eskalasi Daily Task "bermasalah" menjadi tiket.
+			pr.Post("/items/{id}/escalate-ticket", s.handleEscalateTicket)
+
+			// F21: lampiran pendukung.
+			pr.Get("/items/{id}/attachments", s.handleListAttachments)
+			pr.Post("/items/{id}/attachments", s.handleUploadAttachment)
+			pr.Get("/attachments/{id}", s.handleDownloadAttachment)
+			pr.Delete("/attachments/{id}", s.handleDeleteAttachment)
+
+			// F20/F22: KPI & SLA — khusus peran manajerial (izin kpi.view).
+			// Admin (super user) selalu lolos. Lihat grup izin di bawah.
+
 			pr.Get("/dashboard", s.handleDashboard)
 
 			// Feed notifikasi untuk lonceng sidebar.
 			pr.Get("/notifications", s.handleListNotifications)
 			pr.Post("/notifications/read", s.handleMarkNotificationsRead)
 
+			// F22: konfigurasi ringkasan tugas harian (baca untuk semua; tulis admin).
+			pr.Get("/settings/daily-summary", s.handleGetDailySummarySettings)
+
 			// F12: master data (baca untuk semua; tulis dijaga izin masterdata.write)
 			pr.Get("/master-data", s.handleListMasterData)
+
+			// F26: catatan (sticky notes). Baca dijaga izin notes.view;
+			// tambah/ubah/hapus dijaga izin notes.write (grup di bawah).
+			pr.With(s.requirePermission("notes.view")).Get("/notes", s.handleListNotes)
+			pr.With(s.requirePermission("notes.view")).Get("/notes/{id}", s.handleGetNote)
+
+			pr.Group(func(nr chi.Router) {
+				nr.Use(s.requirePermission("notes.write"))
+				nr.Post("/notes", s.handleCreateNote)
+				nr.Patch("/notes/{id}", s.handleUpdateNote)
+				nr.Patch("/notes/{id}/shares", s.handleSetNoteShares)
+				nr.Delete("/notes/{id}", s.handleDeleteNote)
+			})
 		})
 
 		// ---------------------------------------------------------------
 		// Admin
 		// ---------------------------------------------------------------
+		// ---------------------------------------------------------------
+		// Manajemen pengguna & tim — izin pengguna.write / tim.write.
+		// Admin (super user) selalu lolos; manager yang diberi izin juga.
+		// ---------------------------------------------------------------
+		api.Group(func(ur chi.Router) {
+			ur.Use(s.requireAuth)
+			ur.Use(s.requirePermission("users.write"))
+			ur.Get("/users", s.handleListUsers)
+			ur.Post("/users", s.handleCreateUser)
+			ur.Patch("/users/{id}", s.handleUpdateUser)
+			ur.Post("/users/{id}/reset-password", s.handleResetUserPassword)
+			ur.Delete("/users/{id}", s.handleDeleteUser)
+		})
+		api.Group(func(tr chi.Router) {
+			tr.Use(s.requireAuth)
+			tr.Use(s.requirePermission("teams.write"))
+			tr.Post("/teams", s.handleCreateTeam)
+			tr.Patch("/teams/{id}", s.handleUpdateTeam)
+			tr.Delete("/teams/{id}", s.handleDeleteTeam)
+		})
+
 		api.Group(func(ar chi.Router) {
 			ar.Use(s.requireAuth)
 			ar.Use(s.requireAdmin)
 
-			ar.Get("/users", s.handleListUsers)
-			ar.Post("/users", s.handleCreateUser)
-			ar.Patch("/users/{id}", s.handleUpdateUser)
-			ar.Post("/users/{id}/reset-password", s.handleResetUserPassword)
-			ar.Delete("/users/{id}", s.handleDeleteUser)
-
 			// Force status (admin saja) — koreksi darurat tanpa aturan transisi.
 			ar.Post("/items/{id}/force-status", s.handleForceStatus)
 
-			ar.Post("/teams", s.handleCreateTeam)
-			ar.Patch("/teams/{id}", s.handleUpdateTeam)
-			ar.Delete("/teams/{id}", s.handleDeleteTeam)
+			// F20: force unlock (buka tiket closed/completed, tanpa aturan transisi).
+			ar.Post("/items/{id}/force-unlock", s.handleForceUnlock)
 
 			ar.Get("/audit", s.handleListAudit)
 			ar.Get("/outbox", s.handleListOutbox)
+
+			// F22: ringkasan tugas harian (tulis + preview uji).
+			ar.Post("/settings/daily-summary", s.handleSetDailySummarySettings)
+			ar.Post("/settings/daily-summary/preview", s.handlePreviewDailySummary)
 
 			// F3/F4: konfigurasi notifikasi (admin & noc)
 			ar.Post("/providers", s.handleCreateProvider)
@@ -150,6 +226,23 @@ func (s *Server) Handler() http.Handler {
 			ar.Post("/policies", s.handleCreatePolicy)
 			ar.Patch("/policies/{id}", s.handleUpdatePolicy)
 			ar.Delete("/policies/{id}", s.handleDeletePolicy)
+
+			// F18: sinkronisasi spreadsheet (admin only).
+			ar.Get("/sheet-sync", s.handleGetSheetSync)
+			ar.Post("/sheet-sync", s.handleSaveSheetSync)
+			ar.Post("/sheet-sync/test", s.handleTestSheetSync)
+			ar.Post("/sheet-sync/create-tab", s.handleCreateSheetTab)
+
+			// F34: cadangan & pemulihan database + unggah FTP (admin only).
+			ar.Get("/backup", s.handleListBackups)
+			ar.Post("/backup", s.handleCreateBackup)
+			ar.Post("/backup/config", s.handleBackupConfig)
+			ar.Post("/backup/upload", s.handleUploadBackupFile)
+			ar.Post("/backup/ftp/test", s.handleTestFTP)
+			ar.Get("/backup/{name}", s.handleDownloadBackup)
+			ar.Delete("/backup/{name}", s.handleDeleteBackup)
+			ar.Post("/backup/{name}/upload", s.handleUploadBackup)
+			ar.Post("/backup/{name}/restore", s.handleRestoreBackup)
 		})
 
 		// ---------------------------------------------------------------
@@ -175,6 +268,34 @@ func (s *Server) Handler() http.Handler {
 
 			rp.Get("/role-permissions", s.handleListRolePermissions)
 			rp.Post("/role-permissions", s.handleSetRolePermission)
+		})
+
+		// ---------------------------------------------------------------
+		// F22: peran dinamis (roles)
+		//
+		// Baca untuk semua yang terautentikasi; tulis dijaga izin roles.write.
+		// ---------------------------------------------------------------
+		api.Group(func(rr chi.Router) {
+			rr.Use(s.requireAuth)
+			rr.Get("/roles", s.handleListRoles)
+		})
+		api.Group(func(rw chi.Router) {
+			rw.Use(s.requireAuth)
+			rw.Use(s.requirePermission("roles.write"))
+			rw.Post("/roles", s.handleCreateRole)
+			rw.Patch("/roles/{role}", s.handleUpdateRole)
+			rw.Delete("/roles/{role}", s.handleDeleteRole)
+		})
+
+		// ---------------------------------------------------------------
+		// F22: KPI & SLA (izin kpi.view — manajerial + super user)
+		// ---------------------------------------------------------------
+		api.Group(func(kp chi.Router) {
+			kp.Use(s.requireAuth)
+			kp.Use(s.requirePermission("kpi.view"))
+			kp.Get("/kpi/users", s.handleKPIUsers)
+			kp.Get("/kpi/sla", s.handleKPI)
+			kp.Get("/kpi/sla/export.csv", s.handleKPIExportCSV)
 		})
 	})
 

@@ -1,20 +1,36 @@
 import { useState } from 'react'
-import { api, ApiUser } from '../api'
-import { EmptyState, ErrorState, LoadingBlock, Modal, PageHeader, formatWIB } from '../components/ui'
+import { api, ApiUser, MasterDataEntry, masterDataApi, notificationApi, RoleDef, rolesApi } from '../api'
+import { ConfirmDialog, EmptyState, ErrorState, LoadingBlock, Modal, PageHeader, formatWIB } from '../components/ui'
 import { useAsync } from '../hooks'
 
 type Toast = (kind: 'success' | 'error' | 'info' | 'warning', title: string, body?: string) => void
 
-const ROLE_OPTIONS = [
-  { value: 'admin', label: 'Administrator', note: 'Akses penuh termasuk user & audit' },
-  { value: 'noc', label: 'NOC', note: 'Kelola reminder, RFS, target, provider' },
-  { value: 'agent', label: 'Agent', note: 'Menangani work item & tiket' },
-  { value: 'sales', label: 'Sales', note: 'Input data RFS' },
-  { value: 'viewer', label: 'Viewer', note: 'Hanya membaca' },
+type TeamRow = {
+  id: string
+  name: string
+  description: string
+  category: string
+  target_id?: string
+  is_active: boolean
+}
+
+// ROLE_OPTIONS bawaan dipakai sebagai fallback sebelum daftar peran dimuat.
+const FALLBACK_ROLES: RoleDef[] = [
+  { role: 'admin', label: 'Administrator (Super User)', description: 'Akses penuh', is_super: true, is_system: true, rank: 10, created_at: '', updated_at: '' },
+  { role: 'manager', label: 'Manager', description: 'Manajerial', is_super: false, is_system: true, rank: 20, created_at: '', updated_at: '' },
+  { role: 'spv', label: 'Supervisor', description: 'Pengawas operasional', is_super: false, is_system: true, rank: 30, created_at: '', updated_at: '' },
+  { role: 'owner', label: 'Owner', description: 'Pemilik/pimpinan', is_super: false, is_system: true, rank: 35, created_at: '', updated_at: '' },
+  { role: 'noc', label: 'NOC', description: 'Operasional NOC', is_super: false, is_system: true, rank: 40, created_at: '', updated_at: '' },
+  { role: 'agent', label: 'Agent', description: 'Menangani work item', is_super: false, is_system: true, rank: 50, created_at: '', updated_at: '' },
+  { role: 'sales', label: 'Sales', description: 'Input data RFS', is_super: false, is_system: true, rank: 60, created_at: '', updated_at: '' },
+  { role: 'viewer', label: 'Viewer', description: 'Hanya membaca', is_super: false, is_system: true, rank: 70, created_at: '', updated_at: '' },
 ]
 
-const roleTone: Record<string, string> = {
+const ROLE_TONES: Record<string, string> = {
   admin: 'bg-critical-container text-on-critical-container border-critical',
+  manager: 'bg-critical-container text-on-critical-container border-outline-variant',
+  spv: 'bg-warning-container text-on-warning-container border-outline-variant',
+  owner: 'bg-warning-container text-on-warning-container border-outline-variant',
   noc: 'bg-primary-container text-on-primary-container border-outline-variant',
   agent: 'bg-info-container text-on-info-container border-outline-variant',
   sales: 'bg-warning-container text-on-warning-container border-outline-variant',
@@ -22,15 +38,45 @@ const roleTone: Record<string, string> = {
   customer: 'bg-surface-container text-text-secondary border-outline-variant',
 }
 
+function roleToneFor(role: string): string {
+  return ROLE_TONES[role] ?? 'bg-surface-container text-text-secondary border-outline-variant'
+}
+
 export default function Users({ user, toast }: { user: ApiUser | null; toast: Toast }) {
   const users = useAsync(() => api.users(), [])
   const teams = useAsync(() => api.teams(), [])
+  const roles = useAsync(() => rolesApi.list(), [])
+  const teamCats = useAsync(() => masterDataApi.list({ kind: 'team_category', active: 'true' }), [])
+  const targets = useAsync(() => notificationApi.targetOptions(), [])
 
   const [showCreate, setShowCreate] = useState(false)
   const [editTarget, setEditTarget] = useState<ApiUser | null>(null)
   const [resetTarget, setResetTarget] = useState<ApiUser | null>(null)
+  const [teamModal, setTeamModal] = useState<{ mode: 'create' } | { mode: 'edit'; team: TeamRow } | null>(null)
+  const [teamDelete, setTeamDelete] = useState<TeamRow | null>(null)
+
+  const roleList: RoleDef[] = roles.data?.roles ?? FALLBACK_ROLES
+  const categories: MasterDataEntry[] = teamCats.data?.entries ?? []
+  const canManageTeams = !!user && (user.is_super || user.role === 'admin' || (user.permissions ?? []).includes('teams.write'))
 
   const teamName = (id?: string) => teams.data?.teams.find((t) => t.id === id)?.name
+
+  function reloadTeams() {
+    teams.reload()
+  }
+
+  async function confirmTeamDelete() {
+    if (!teamDelete) return
+    try {
+      await api.deleteTeam(teamDelete.id)
+      toast('success', 'Tim dihapus', teamDelete.name)
+      setTeamDelete(null)
+      reloadTeams()
+    } catch (err) {
+      toast('error', 'Gagal menghapus tim', err instanceof Error ? err.message : undefined)
+      setTeamDelete(null)
+    }
+  }
 
   async function handleDelete(target: ApiUser) {
     if (!window.confirm(`Hapus user "${target.username}"? Tindakan ini tidak dapat dibatalkan.`)) return
@@ -133,9 +179,9 @@ export default function Users({ user, toast }: { user: ApiUser | null; toast: To
                       </td>
                       <td className="text-text-secondary">{u.full_name || '—'}</td>
                       <td>
-                        <span className={`badge ${roleTone[u.role] ?? ''}`}>{u.role}</span>
+                        <span className={`badge ${roleToneFor(u.role)}`}>{u.role}</span>
                       </td>
-                      <td className="text-text-secondary">{teamName((u as unknown as { team_id?: string }).team_id) ?? '—'}</td>
+                      <td className="text-text-secondary">{teamName(u.team_id) ?? '—'}</td>
                       <td>
                         <div className="flex flex-col gap-0.5">
                           {(u as unknown as { telegram_chat_id?: string }).telegram_chat_id && (
@@ -211,35 +257,117 @@ export default function Users({ user, toast }: { user: ApiUser | null; toast: To
         )}
       </section>
 
-      {/* Tim */}
+      {/* Tim & kategori */}
       <section className="card mt-5">
-        <div className="border-b border-border px-5 py-3.5">
-          <h3 className="font-headline text-lg font-semibold">Tim</h3>
-          <p className="text-body-sm text-text-secondary">Tim dipakai untuk penugasan work item dan tiket.</p>
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-5 py-3.5">
+          <div>
+            <h3 className="font-headline text-lg font-semibold">Tim &amp; Kategori</h3>
+            <p className="text-body-sm text-text-secondary">
+              Tim dipakai untuk penugasan work item dan tiket; kategori dikelola di Master Data (Kategori Tim).
+            </p>
+          </div>
+          {canManageTeams && (
+            <button className="btn-primary" onClick={() => setTeamModal({ mode: 'create' })}>
+              <span className="material-symbols-outlined text-[18px]">add</span>
+              Tambah Tim
+            </button>
+          )}
         </div>
         {teams.loading && <LoadingBlock />}
         {!teams.loading && (
-          <div className="divide-y divide-border">
-            {(teams.data?.teams ?? []).map((t) => (
-              <div key={t.id} className="flex items-center justify-between gap-3 px-5 py-3">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="font-medium">{t.name}</span>
-                    <span className="badge bg-surface-container text-text-secondary border-outline-variant">
-                      {list.filter((u) => (u as unknown as { team_id?: string }).team_id === t.id).length} anggota
-                    </span>
-                  </div>
-                  <p className="truncate text-body-sm text-text-secondary">{t.description || 'Tanpa deskripsi'}</p>
-                </div>
-              </div>
-            ))}
+          <div className="overflow-x-auto">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Nama tim</th>
+                  <th>Kategori</th>
+                  <th>Anggota</th>
+                  <th>Status</th>
+                  {canManageTeams && <th className="text-right">Aksi</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {(teams.data?.teams ?? []).map((t) => (
+                  <tr key={t.id}>
+                    <td>
+                      <div className="font-medium">{t.name}</div>
+                      <p className="truncate text-label-sm text-text-secondary">{t.description || 'Tanpa deskripsi'}</p>
+                    </td>
+                    <td>
+                      {t.category ? (
+                        <span className="badge bg-info-container text-on-info-container border-outline-variant">{t.category}</span>
+                      ) : (
+                        <span className="text-text-secondary">—</span>
+                      )}
+                    </td>
+                    <td className="mono">{list.filter((u) => u.team_id === t.id).length}</td>
+                    <td>
+                      <span
+                        className={`badge ${
+                          t.is_active
+                            ? 'bg-success-container text-on-success-container border-outline-variant'
+                            : 'bg-surface-container text-text-secondary border-outline-variant'
+                        }`}
+                      >
+                        {t.is_active ? 'aktif' : 'nonaktif'}
+                      </span>
+                    </td>
+                    {canManageTeams && (
+                      <td>
+                        <div className="flex justify-end gap-1">
+                          <button className="btn-ghost h-8 w-8 px-0" title="Ubah tim" onClick={() => setTeamModal({ mode: 'edit', team: t })}>
+                            <span className="material-symbols-outlined text-[18px]">edit</span>
+                          </button>
+                          <button className="btn-ghost h-8 w-8 px-0 text-critical" title="Hapus tim" onClick={() => setTeamDelete(t)}>
+                            <span className="material-symbols-outlined text-[18px]">delete</span>
+                          </button>
+                        </div>
+                      </td>
+                    )}
+                  </tr>
+                ))}
+                {(teams.data?.teams ?? []).length === 0 && (
+                  <tr>
+                    <td colSpan={canManageTeams ? 5 : 4} className="py-6 text-center text-text-secondary">
+                      Belum ada tim.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
           </div>
         )}
       </section>
 
+      {teamModal && (
+        <TeamForm
+          existing={teamModal.mode === 'edit' ? teamModal.team : undefined}
+          categories={categories}
+          targets={targets.data?.targets ?? []}
+          onClose={() => setTeamModal(null)}
+          onSaved={() => {
+            setTeamModal(null)
+            toast('success', teamModal.mode === 'edit' ? 'Tim diperbarui' : 'Tim dibuat')
+            reloadTeams()
+          }}
+          onError={(msg) => toast('error', 'Gagal menyimpan tim', msg)}
+        />
+      )}
+
+      <ConfirmDialog
+        open={!!teamDelete}
+        title="Hapus tim?"
+        body={teamDelete ? `Tim "${teamDelete.name}" akan dihapus. Tim yang masih memiliki anggota tidak dapat dihapus.` : ''}
+        confirmLabel="Hapus"
+        tone="danger"
+        onCancel={() => setTeamDelete(null)}
+        onConfirm={confirmTeamDelete}
+      />
+
       {showCreate && (
         <UserForm
           teams={teams.data?.teams ?? []}
+          roles={roleList}
           onClose={() => setShowCreate(false)}
           onSaved={() => {
             setShowCreate(false)
@@ -254,6 +382,7 @@ export default function Users({ user, toast }: { user: ApiUser | null; toast: To
         <UserForm
           existing={editTarget}
           teams={teams.data?.teams ?? []}
+          roles={roleList}
           onClose={() => setEditTarget(null)}
           onSaved={() => {
             setEditTarget(null)
@@ -291,12 +420,14 @@ function MiniStat({ label, value }: { label: string; value: number }) {
 function UserForm({
   existing,
   teams,
+  roles,
   onClose,
   onSaved,
   onError,
 }: {
   existing?: ApiUser
   teams: { id: string; name: string }[]
+  roles: RoleDef[]
   onClose: () => void
   onSaved: () => void
   onError: (msg: string) => void
@@ -307,9 +438,9 @@ function UserForm({
   const [email, setEmail] = useState(existing?.email ?? '')
   const [password, setPassword] = useState('')
   const [role, setRole] = useState(existing?.role ?? 'viewer')
-  const [teamId, setTeamId] = useState((existing as unknown as { team_id?: string })?.team_id ?? '')
-  const [telegram, setTelegram] = useState((existing as unknown as { telegram_chat_id?: string })?.telegram_chat_id ?? '')
-  const [waNumber, setWaNumber] = useState((existing as unknown as { wa_number?: string })?.wa_number ?? '')
+  const [teamId, setTeamId] = useState(existing?.team_id ?? '')
+  const [telegram, setTelegram] = useState(existing?.telegram_chat_id ?? '')
+  const [waNumber, setWaNumber] = useState(existing?.wa_number ?? '')
   const [busy, setBusy] = useState(false)
 
   async function submit(e: React.FormEvent) {
@@ -412,14 +543,14 @@ function UserForm({
               Role
             </label>
             <select id="u-role" className="input" value={role} onChange={(e) => setRole(e.target.value)}>
-              {ROLE_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>
+              {roles.map((o) => (
+                <option key={o.role} value={o.role}>
                   {o.label}
                 </option>
               ))}
             </select>
             <p className="mt-1 text-label-sm text-text-secondary">
-              {ROLE_OPTIONS.find((o) => o.value === role)?.note}
+              {roles.find((o) => o.role === role)?.description || 'Izin diatur pada halaman Peran & Izin.'}
             </p>
           </div>
           <div>
@@ -555,6 +686,141 @@ function ResetPasswordForm({
           <span className="material-symbols-outlined text-[18px] shrink-0">info</span>
           <span>Seluruh sesi user ini akan dicabut dan ia harus login ulang.</span>
         </div>
+      </form>
+    </Modal>
+  )
+}
+
+function TeamForm({
+  existing,
+  categories,
+  targets,
+  onClose,
+  onSaved,
+  onError,
+}: {
+  existing?: TeamRow
+  categories: MasterDataEntry[]
+  targets: { id: string; name: string }[]
+  onClose: () => void
+  onSaved: () => void
+  onError: (msg: string) => void
+}) {
+  const isEdit = !!existing
+  const [name, setName] = useState(existing?.name ?? '')
+  const [description, setDescription] = useState(existing?.description ?? '')
+  const [category, setCategory] = useState(existing?.category ?? '')
+  const [targetID, setTargetID] = useState(existing?.target_id ?? '')
+  const [isActive, setIsActive] = useState(existing?.is_active ?? true)
+  const [busy, setBusy] = useState(false)
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault()
+    setBusy(true)
+    try {
+      if (isEdit && existing) {
+        await api.updateTeam(existing.id, {
+          name: name.trim(),
+          description,
+          category,
+          is_active: isActive,
+          target_id: targetID,
+        })
+      } else {
+        await api.createTeam({ name: name.trim(), description, category, target_id: targetID || undefined })
+      }
+      onSaved()
+    } catch (err) {
+      onError(err instanceof Error ? err.message : 'Terjadi kesalahan')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal
+      title={isEdit ? `Ubah Tim — ${existing?.name}` : 'Tambah Tim'}
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn-secondary" onClick={onClose} disabled={busy}>
+            Batal
+          </button>
+          <button className="btn-primary" onClick={submit} disabled={busy || !name.trim()}>
+            {busy ? 'Menyimpan…' : isEdit ? 'Simpan Perubahan' : 'Buat Tim'}
+          </button>
+        </>
+      }
+    >
+      <form onSubmit={submit} className="space-y-3.5">
+        <div>
+          <label className="label-field" htmlFor="t-name">
+            Nama tim
+          </label>
+          <input
+            id="t-name"
+            className="input"
+            required
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="mis. NOC Shift Pagi"
+          />
+        </div>
+        <div>
+          <label className="label-field" htmlFor="t-category">
+            Kategori
+          </label>
+          <select id="t-category" className="input" value={category} onChange={(e) => setCategory(e.target.value)}>
+            <option value="">— Tanpa kategori —</option>
+            {categories.map((c) => (
+              <option key={c.id} value={c.code}>
+                {c.label}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1 text-label-sm text-text-secondary">
+            Kategori dikelola pada Master Data › Kategori Tim.
+          </p>
+        </div>
+        <div>
+          <label className="label-field" htmlFor="t-target">
+            Target notifikasi
+          </label>
+          <select
+            id="t-target"
+            className="input"
+            value={targetID}
+            onChange={(e) => setTargetID(e.target.value)}
+          >
+            <option value="">— Tidak ada —</option>
+            {targets.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1 text-label-sm text-text-secondary">
+            Target default notifikasi tim (mis. notifikasi Aktivasi/EWO tanpa target item).
+          </p>
+        </div>
+        <div>
+          <label className="label-field" htmlFor="t-desc">
+            Deskripsi
+          </label>
+          <input
+            id="t-desc"
+            className="input"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="Ringkasan tugas tim"
+          />
+        </div>
+        {isEdit && (
+          <label className="flex items-center gap-2 text-body-sm">
+            <input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} />
+            Tim aktif
+          </label>
+        )}
       </form>
     </Modal>
   )

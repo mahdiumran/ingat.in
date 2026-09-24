@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -84,11 +85,36 @@ type Config struct {
 	OutboxSenderInterval int // detik
 	FanoutInterval       int // detik
 
+	// Telegram command bot (F12, inbound)
+	//
+	// TelegramWebhookSecret mengamankan endpoint publik
+	// POST /api/hooks/telegram/{secret}. Bot tidak aktif bila kosong.
+	// Daftar grup yang diizinkan dikelola admin lewat master data
+	// (kind "telegram_chat"), bukan dari environment.
+	TelegramWebhookSecret string
+
 	// Retensi (hari)
 	AuditRetentionDays   int
 	OutboxRetentionDays  int
 	BackupKeepDays       int
 	RetentionIntervalHrs int
+
+	// Sinkronisasi Google Sheets (F18)
+	SheetSyncInterval int // detik
+
+	// Lampiran (F21)
+	AttachmentsMaxMB        int
+	AttachmentsAllowedTypes []string
+
+	// Cadangan (F34)
+	//
+	// BackupDir adalah direktori penyimpanan berkas cadangan (default
+	// <DataDir>/backups). BackupAutoEnabled + BackupSchedule mengatur job
+	// otomatis; nilai ini dapat ditimpa lewat panel (tabel settings).
+	BackupDir            string
+	BackupAutoEnabled    bool
+	BackupSchedule       string
+	BackupPruneAfterDays int
 }
 
 // Load membaca konfigurasi dari environment dan memvalidasi nilai kritis.
@@ -116,6 +142,13 @@ func Load() (*Config, error) {
 		WahaBaseURL: getenv("INGATIN_WAHA_BASE_URL", defaultWahaBaseURL),
 		WahaAPIKey:  getenv("INGATIN_WAHA_API_KEY", ""),
 		WAHAQRURL:   getenv("INGATIN_WAHA_QR_URL", ""),
+
+		TelegramWebhookSecret: getenv("INGATIN_TELEGRAM_WEBHOOK_SECRET", ""),
+
+		BackupDir:            getenv("INGATIN_BACKUP_DIR", ""),
+		BackupAutoEnabled:    getenvBool("INGATIN_BACKUP_AUTO_ENABLED", false),
+		BackupSchedule:       getenv("INGATIN_BACKUP_SCHEDULE", "0 2 * * *"),
+		BackupPruneAfterDays: 0, // diisi dari BackupKeepDays di bawah
 	}
 
 	// Mode validasi
@@ -160,8 +193,23 @@ func Load() (*Config, error) {
 	if c.RetentionIntervalHrs, err = getenvInt("INGATIN_RETENTION_INTERVAL_HOURS", 24); err != nil {
 		return nil, err
 	}
+	if c.SheetSyncInterval, err = getenvInt("INGATIN_SHEET_SYNC_INTERVAL_SECONDS", 30); err != nil {
+		return nil, err
+	}
+	if c.AttachmentsMaxMB, err = getenvInt("INGATIN_ATTACHMENTS_MAX_MB", 50); err != nil {
+		return nil, err
+	}
+	c.AttachmentsAllowedTypes = parseCSV(getenv("INGATIN_ATTACHMENTS_ALLOWED_TYPES",
+		"image/png,image/jpeg,image/jpg,image/gif,image/webp,application/pdf,text/plain,text/csv,application/zip,application/gzip,application/x-gzip"))
 
 	c.TrustedProxies = parseTrustedProxies(getenv("INGATIN_TRUSTED_PROXIES", ""))
+
+	// Cadangan: direktori default <DataDir>/backups; retensi memakai
+	// BackupKeepDays yang sudah dibaca di atas (default 14 hari).
+	if strings.TrimSpace(c.BackupDir) == "" {
+		c.BackupDir = filepath.Join(c.DataDir, "backups")
+	}
+	c.BackupPruneAfterDays = c.BackupKeepDays
 
 	if err := c.validate(); err != nil {
 		return nil, err
@@ -200,31 +248,37 @@ func (c *Config) validate() error {
 // Secret tidak pernah disertakan.
 func (c *Config) Marshal() []byte {
 	safe := map[string]any{
-		"app_name":                   c.AppName,
-		"app_version":                c.AppVersion,
-		"mode":                       string(c.Mode),
-		"addr":                       c.Addr,
-		"log_level":                  c.LogLevel,
-		"timezone":                   c.Timezone,
-		"data_dir":                   c.DataDir,
-		"access_token_minutes":       c.AccessTokenMinutes,
-		"refresh_token_days":         c.RefreshTokenDays,
-		"session_idle_timeout_min":   c.SessionIdleTimeoutMinutes,
-		"frontend_origin":            c.FrontendOrigin,
-		"trusted_proxies":            c.TrustedProxies,
-		"waha_base_url":              c.WahaBaseURL,
-		"waha_api_key_set":           c.WahaAPIKey != "",
-		"secret_key_set":             c.SecretKey != "",
-		"credential_key_set":         c.CredentialKey != "",
-		"db_url_set":                 c.DBURL != "",
-		"outbox_batch_size":          c.OutboxBatchSize,
-		"outbox_max_attempts":        c.OutboxMaxAttempts,
-		"outbox_sender_interval_sec": c.OutboxSenderInterval,
-		"fanout_interval_sec":        c.FanoutInterval,
-		"audit_retention_days":       c.AuditRetentionDays,
-		"outbox_retention_days":      c.OutboxRetentionDays,
-		"backup_keep_days":           c.BackupKeepDays,
-		"retention_interval_hours":   c.RetentionIntervalHrs,
+		"app_name":                    c.AppName,
+		"app_version":                 c.AppVersion,
+		"mode":                        string(c.Mode),
+		"addr":                        c.Addr,
+		"log_level":                   c.LogLevel,
+		"timezone":                    c.Timezone,
+		"data_dir":                    c.DataDir,
+		"access_token_minutes":        c.AccessTokenMinutes,
+		"refresh_token_days":          c.RefreshTokenDays,
+		"session_idle_timeout_min":    c.SessionIdleTimeoutMinutes,
+		"frontend_origin":             c.FrontendOrigin,
+		"trusted_proxies":             c.TrustedProxies,
+		"waha_base_url":               c.WahaBaseURL,
+		"waha_api_key_set":            c.WahaAPIKey != "",
+		"telegram_webhook_secret_set": c.TelegramWebhookSecret != "",
+		"secret_key_set":              c.SecretKey != "",
+		"credential_key_set":          c.CredentialKey != "",
+		"db_url_set":                  c.DBURL != "",
+		"outbox_batch_size":           c.OutboxBatchSize,
+		"outbox_max_attempts":         c.OutboxMaxAttempts,
+		"outbox_sender_interval_sec":  c.OutboxSenderInterval,
+		"fanout_interval_sec":         c.FanoutInterval,
+		"audit_retention_days":        c.AuditRetentionDays,
+		"outbox_retention_days":       c.OutboxRetentionDays,
+		"backup_keep_days":            c.BackupKeepDays,
+		"retention_interval_hours":    c.RetentionIntervalHrs,
+		"sheet_sync_interval_sec":     c.SheetSyncInterval,
+		"attachments_max_mb":          c.AttachmentsMaxMB,
+		"backup_dir":                  c.BackupDir,
+		"backup_auto_enabled":         c.BackupAutoEnabled,
+		"backup_schedule":             c.BackupSchedule,
 	}
 	out, _ := json.Marshal(safe)
 	return out
@@ -249,8 +303,38 @@ func getenvInt(key string, def int) (int, error) {
 	return v, nil
 }
 
+// getenvBool membaca boolean gaya umum (1/true/yes/on).
+func getenvBool(key string, def bool) bool {
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	switch raw {
+	case "":
+		return def
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
 // parseTrustedProxies memisahkan daftar IP/CIDR pada koma, spasi, tab, atau baris baru.
 func parseTrustedProxies(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	fields := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t' || r == '\n' || r == '\r'
+	})
+	out := make([]string, 0, len(fields))
+	for _, f := range fields {
+		if v := strings.TrimSpace(f); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// parseCSV memecah daftar dipisah koma/spasi menjadi slice bersih.
+func parseCSV(raw string) []string {
 	if strings.TrimSpace(raw) == "" {
 		return nil
 	}
