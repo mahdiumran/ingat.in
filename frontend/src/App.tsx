@@ -109,6 +109,10 @@ export default function App() {
   const [toasts, setToasts] = useState<Toast[]>([])
   // focusItem dipakai lonceng notifikasi untuk membuka detail item langsung.
   const [focusItem, setFocusItem] = useState<{ id: string; view: View } | null>(null)
+  // createShortcut dipakai Dashboard (Quick Access) untuk membuka form
+  // pembuatan pada halaman tujuan. Nonce memastikan pembukaan berulang tetap
+  // memicu efek di halaman tersebut (walaupun view-nya sama).
+  const [createShortcut, setCreateShortcut] = useState<{ view: View; nonce: number } | null>(null)
   // masterDataKind menyimpan kelompok master data yang sedang dikelola.
   const [masterDataKind, setMasterDataKind] = useState<string>('customer')
 
@@ -202,6 +206,13 @@ export default function App() {
     setView(next)
     setMobileNavOpen(false)
     window.scrollTo({ top: 0 })
+  }
+
+  // openCreate berpindah ke halaman daftar lalu meminta halaman itu membuka
+  // form pembuatan. Dipakai oleh tombol "Quick Access" di Dashboard.
+  function openCreate(next: View) {
+    setCreateShortcut({ view: next, nonce: Date.now() })
+    navigate(next)
   }
 
   // openNotificationItem menerima id work item dari lonceng lalu membuka
@@ -305,13 +316,14 @@ export default function App() {
                 appVersion={appVersion}
                 health={health}
                 onNavigate={navigate}
+                onQuickCreate={openCreate}
               />
             )}
-            {view === 'todos' && <Todos user={user} toast={pushToast} focusItemId={focusItem?.view === 'todos' ? focusItem.id : null} onFocusConsumed={() => setFocusItem(null)} />}
-            {view === 'daily' && <DailyTasks user={user} toast={pushToast} focusItemId={focusItem?.view === 'daily' ? focusItem.id : null} onFocusConsumed={() => setFocusItem(null)} />}
-            {view === 'tickets' && <Tickets user={user} toast={pushToast} focusItemId={focusItem?.view === 'tickets' ? focusItem.id : null} onFocusConsumed={() => setFocusItem(null)} />}
-            {view === 'reminders' && <Reminders user={user} toast={pushToast} focusItemId={focusItem?.view === 'reminders' ? focusItem.id : null} onFocusConsumed={() => setFocusItem(null)} />}
-            {view === 'rfs' && <Rfs user={user} toast={pushToast} focusItemId={focusItem?.view === 'rfs' ? focusItem.id : null} onFocusConsumed={() => setFocusItem(null)} />}
+            {view === 'todos' && <Todos user={user} toast={pushToast} focusItemId={focusItem?.view === 'todos' ? focusItem.id : null} onFocusConsumed={() => setFocusItem(null)} autoCreateNonce={createShortcut?.view === 'todos' ? createShortcut.nonce : null} onAutoCreateConsumed={() => setCreateShortcut(null)} />}
+            {view === 'daily' && <DailyTasks user={user} toast={pushToast} focusItemId={focusItem?.view === 'daily' ? focusItem.id : null} onFocusConsumed={() => setFocusItem(null)} autoCreateNonce={createShortcut?.view === 'daily' ? createShortcut.nonce : null} onAutoCreateConsumed={() => setCreateShortcut(null)} />}
+            {view === 'tickets' && <Tickets user={user} toast={pushToast} focusItemId={focusItem?.view === 'tickets' ? focusItem.id : null} onFocusConsumed={() => setFocusItem(null)} autoCreateNonce={createShortcut?.view === 'tickets' ? createShortcut.nonce : null} onAutoCreateConsumed={() => setCreateShortcut(null)} />}
+            {view === 'reminders' && <Reminders user={user} toast={pushToast} focusItemId={focusItem?.view === 'reminders' ? focusItem.id : null} onFocusConsumed={() => setFocusItem(null)} autoCreateNonce={createShortcut?.view === 'reminders' ? createShortcut.nonce : null} onAutoCreateConsumed={() => setCreateShortcut(null)} />}
+            {view === 'rfs' && <Rfs user={user} toast={pushToast} focusItemId={focusItem?.view === 'rfs' ? focusItem.id : null} onFocusConsumed={() => setFocusItem(null)} autoCreateNonce={createShortcut?.view === 'rfs' ? createShortcut.nonce : null} onAutoCreateConsumed={() => setCreateShortcut(null)} />}
             {view === 'notes' && <Notes user={user} toast={pushToast} />}
             {view === 'targets' && can('providers.view') && <Targets user={user} toast={pushToast} />}
             {view === 'providers' && can('providers.view') && <Providers user={user} toast={pushToast} />}

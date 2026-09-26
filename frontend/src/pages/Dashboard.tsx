@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react'
 import { ApiUser, workItemsApi } from '../api'
 import { ErrorState, LoadingBlock, PageHeader, PriorityBadge, StatCard, StatusBadge, formatWIB } from '../components/ui'
 import { useAsync } from '../hooks'
@@ -5,6 +6,15 @@ import { statusTone } from '../design/tokens'
 import type { View } from '../App'
 
 type HealthState = 'loading' | 'online' | 'degraded' | 'offline'
+
+// QUICK_CREATE — pintasan pembuatan cepat dari Dashboard.
+const QUICK_CREATE: { view: View; label: string; icon: string }[] = [
+  { view: 'daily', label: 'Create Daily Task', icon: 'checklist' },
+  { view: 'todos', label: 'Create To-do Task', icon: 'task_alt' },
+  { view: 'tickets', label: 'Create Ticket', icon: 'confirmation_number' },
+  { view: 'reminders', label: 'Create Reminder', icon: 'alarm' },
+  { view: 'rfs', label: 'Create RFS / EWO', icon: 'event_available' },
+]
 
 /**
  * Dashboard (F8) — ringkasan operasional nyata dari GET /api/dashboard.
@@ -19,14 +29,41 @@ export default function Dashboard({
   appVersion,
   health,
   onNavigate,
+  onQuickCreate,
 }: {
   user: ApiUser | null
   schemaVersion: number | null
   appVersion: string
   health: HealthState
   onNavigate: (v: View) => void
+  onQuickCreate?: (v: View) => void
 }) {
   const data = useAsync(() => workItemsApi.dashboard(), [])
+  const [quickOpen, setQuickOpen] = useState(false)
+  const quickRef = useRef<HTMLDivElement | null>(null)
+
+  // Tutup dropdown Quick Access saat klik di luar / Escape.
+  useEffect(() => {
+    if (!quickOpen) return
+    const onDoc = (e: MouseEvent) => {
+      if (quickRef.current && !quickRef.current.contains(e.target as Node)) setQuickOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setQuickOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDoc)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [quickOpen])
+
+  function quickCreate(v: View) {
+    setQuickOpen(false)
+    if (onQuickCreate) onQuickCreate(v)
+    else onNavigate(v)
+  }
 
   const healthLabel: Record<HealthState, string> = {
     loading: 'Memeriksa…',
@@ -50,10 +87,50 @@ export default function Dashboard({
         title={`Selamat datang${user ? `, ${user.full_name || user.username}` : ''}`}
         description="Status operasional reminder, RFS, dan notifikasi."
         actions={
-          <button className="btn-secondary" onClick={data.reload}>
-            <span className="material-symbols-outlined text-[18px]">refresh</span>
-            Muat ulang
-          </button>
+          <div className="flex items-center gap-2">
+            <button className="btn-secondary" onClick={data.reload}>
+              <span className="material-symbols-outlined text-[18px]">refresh</span>
+              Muat ulang
+            </button>
+
+            {/* Quick Access — pintasan membuat item baru. */}
+            <div className="relative" ref={quickRef}>
+              <button
+                type="button"
+                className="btn-primary"
+                aria-haspopup="menu"
+                aria-expanded={quickOpen}
+                onClick={() => setQuickOpen((v) => !v)}
+              >
+                <span className="material-symbols-outlined text-[18px]">add_circle</span>
+                Quick Access
+                <span className={`material-symbols-outlined text-[18px] transition-transform ${quickOpen ? 'rotate-180' : ''}`}>
+                  expand_more
+                </span>
+              </button>
+
+              {quickOpen && (
+                <div
+                  role="menu"
+                  className="absolute right-0 top-11 z-40 w-56 overflow-hidden rounded-card border border-border bg-surface-container-lowest py-1 shadow-modal"
+                >
+                  <div className="kicker px-3 pb-1 pt-1.5">Buat Cepat</div>
+                  {QUICK_CREATE.map((q) => (
+                    <button
+                      key={q.view}
+                      role="menuitem"
+                      onClick={() => quickCreate(q.view)}
+                      className="flex w-full items-center gap-2.5 px-3 py-2 text-body-sm text-text-secondary hover:bg-surface-container hover:text-text-primary"
+                    >
+                      <span className="material-symbols-outlined text-[18px]">{q.icon}</span>
+                      <span className="flex-1 text-left">{q.label}</span>
+                      <span className="material-symbols-outlined text-[16px] opacity-60">arrow_forward</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
         }
       />
 

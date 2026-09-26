@@ -66,11 +66,15 @@ export default function Reminders({
   toast,
   focusItemId,
   onFocusConsumed,
+  autoCreateNonce,
+  onAutoCreateConsumed,
 }: {
   user: ApiUser | null
   toast: Toast
   focusItemId?: string | null
   onFocusConsumed?: () => void
+  autoCreateNonce?: number | null
+  onAutoCreateConsumed?: () => void
 }) {
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState('')
@@ -115,6 +119,14 @@ export default function Reminders({
       onFocusConsumed?.()
     }
   }, [focusItemId, onFocusConsumed])
+
+  // Buka form pembuatan saat Dashboard meminta (Quick Access).
+  useEffect(() => {
+    if (autoCreateNonce) {
+      setShowCreate(true)
+      onAutoCreateConsumed?.()
+    }
+  }, [autoCreateNonce, onAutoCreateConsumed])
 
   async function handleNotify(it: WorkItem) {
     setNotifyingID(it.id)

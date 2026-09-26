@@ -42,11 +42,15 @@ export default function Todos({
   toast,
   focusItemId,
   onFocusConsumed,
+  autoCreateNonce,
+  onAutoCreateConsumed,
 }: {
   user: ApiUser | null
   toast: Toast
   focusItemId?: string | null
   onFocusConsumed?: () => void
+  autoCreateNonce?: number | null
+  onAutoCreateConsumed?: () => void
 }) {
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState('')
@@ -74,6 +78,14 @@ export default function Todos({
       onFocusConsumed?.()
     }
   }, [focusItemId, onFocusConsumed])
+
+  // Buka form pembuatan saat Dashboard meminta (Quick Access).
+  useEffect(() => {
+    if (autoCreateNonce) {
+      setShowCreate(true)
+      onAutoCreateConsumed?.()
+    }
+  }, [autoCreateNonce, onAutoCreateConsumed])
 
   const debouncedSearch = useDebounced(search)
   const limit = 50

@@ -105,11 +105,15 @@ export default function DailyTasks({
   toast,
   focusItemId,
   onFocusConsumed,
+  autoCreateNonce,
+  onAutoCreateConsumed,
 }: {
   user: ApiUser | null
   toast: Toast
   focusItemId?: string | null
   onFocusConsumed?: () => void
+  autoCreateNonce?: number | null
+  onAutoCreateConsumed?: () => void
 }) {
   const [date, setDate] = useState<string>(() => todayWIB())
   const [search, setSearch] = useState('')
@@ -171,6 +175,14 @@ export default function DailyTasks({
       onFocusConsumed?.()
     }
   }, [focusItemId, onFocusConsumed])
+
+  // Buka form pembuatan saat Dashboard meminta (Quick Access).
+  useEffect(() => {
+    if (autoCreateNonce) {
+      setShowFullCreate(true)
+      onAutoCreateConsumed?.()
+    }
+  }, [autoCreateNonce, onAutoCreateConsumed])
 
   const debouncedSearch = useDebounced(search)
   const isToday = date === todayWIB()

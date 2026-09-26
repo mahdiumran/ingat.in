@@ -57,11 +57,15 @@ export default function Tickets({
   toast,
   focusItemId,
   onFocusConsumed,
+  autoCreateNonce,
+  onAutoCreateConsumed,
 }: {
   user: ApiUser | null
   toast: Toast
   focusItemId?: string | null
   onFocusConsumed?: () => void
+  autoCreateNonce?: number | null
+  onAutoCreateConsumed?: () => void
 }) {
   const [itemType, setItemType] = useState('incident')
   const [search, setSearch] = useState('')
@@ -83,6 +87,14 @@ export default function Tickets({
       onFocusConsumed?.()
     }
   }, [focusItemId, onFocusConsumed])
+
+  // Buka form pembuatan saat Dashboard meminta (Quick Access).
+  useEffect(() => {
+    if (autoCreateNonce) {
+      setShowCreate(true)
+      onAutoCreateConsumed?.()
+    }
+  }, [autoCreateNonce, onAutoCreateConsumed])
 
   const debouncedSearch = useDebounced(search)
   const limit = 50
