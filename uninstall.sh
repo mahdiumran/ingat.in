@@ -5,7 +5,10 @@
 # PEMAKAIAN:
 #   ./uninstall.sh                  hentikan & hapus container (data tetap)
 #   ./uninstall.sh --purge          hapus juga volume (DESTRUKTIF: data hilang)
-#   ./uninstall.sh --purge --drop-db hapus juga role & database PostgreSQL (DESTRUKTIF)
+#                                   termasuk volume PostgreSQL (pgdata)
+#   ./uninstall.sh --purge --drop-db  hanya relevan untuk PostgreSQL HOST
+#                                   (Mode A lama); pada Mode B database ada
+#                                   di volume pgdata sehingga --purge sudah cukup
 #
 # SELALU jalankan ./scripts/backup.sh sebelum uninstall.
 
@@ -73,13 +76,28 @@ fi
 
 # ---------------------------------------------------------------------------
 # Volume (safety net bila masih tersisa)
+#
+# `$DC down -v` sudah menghapus volume milik proyek, tetapi bila nama proyek
+# Compose berbeda (mis. COMPOSE_PROJECT_NAME), volume dapat tersisa. Kita
+# deteksi nama proyek dari Compose lalu hapus volume <project>_<nama>.
 # ---------------------------------------------------------------------------
 if [[ "$PURGE" == "1" ]]; then
-  for vol in ingatin_data waha_sessions; do
-    if docker volume inspect "$vol" >/dev/null 2>&1; then
-      log "menghapus volume $vol"
-      docker volume rm "$vol" >/dev/null 2>&1 || warn "gagal menghapus volume $vol"
-    fi
+  # Nama proyek: env COMPOSE_PROJECT_NAME mengalahkan nama direktori.
+  PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$(basename "$SCRIPT_DIR")}"
+  # Coba tanyakan ke Compose (lebih akurat) bila memungkinkan.
+  if detected="$($DC config --format json 2>/dev/null \
+        | grep -oE '"name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
+        | sed -E 's/.*"([^"]*)"$/\1/')"; then
+    [[ -n "$detected" ]] && PROJECT_NAME="$detected"
+  fi
+
+  for vol in ingatin_data waha_sessions pgdata; do
+    for candidate in "${PROJECT_NAME}_${vol}" "$vol"; do
+      if docker volume inspect "$candidate" >/dev/null 2>&1; then
+        log "menghapus volume $candidate"
+        docker volume rm "$candidate" >/dev/null 2>&1 || warn "gagal menghapus volume $candidate"
+      fi
+    done
   done
 fi
 

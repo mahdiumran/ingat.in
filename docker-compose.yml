@@ -1,26 +1,35 @@
 # ===========================================================================
 # Ingat.in — satu image, satu file compose.
 #
-# MODE B — PostgreSQL sebagai container (untuk server baru / clean server).
+# MODE B — PostgreSQL sebagai container (default; cocok untuk server baru).
 #
 # Service:
-#   postgres: PostgreSQL 16 (volume pgdata)
-#   migrate : run-once, menerapkan migrasi skema lalu keluar
-#   api     : HTTP API (mode api)
-#   worker  : job terjadwal (mode worker)
-#   waha    : WhatsApp gateway (WAHA)
-#   web     : nginx + SPA
+#   postgres : PostgreSQL 16 (volume pgdata)
+#   migrate  : run-once, menerapkan migrasi skema lalu keluar
+#   api      : HTTP API (mode api)
+#   worker   : job terjadwal (mode worker)
+#   waha     : WhatsApp gateway (WAHA)
+#   web      : nginx + SPA (satu-satunya service yang diekspos ke LAN)
 #
 # NETWORK
-#   Semua service berada pada network bridge bawaan Compose sehingga dapat
-#   saling menjangkau lewat nama service (postgres, api, waha). Tidak ada
-#   service yang memakai `network_mode: host`.
+#   Semua service berada pada network bridge milik Compose sehingga saling
+#   menjangkau lewat nama service (postgres, api, waha). Tidak ada service
+#   yang memakai `network_mode: host`, sehingga tidak ada konflik port dengan
+#   PostgreSQL/nginx host maupun aplikasi lain di server yang sama.
 #
 # PORT (host)
-#   8091 web (0.0.0.0) | 8081 api (127.0.0.1) | 8082 waha (127.0.0.1)
-#   5432 postgres (127.0.0.1)
+#   8091 web    (0.0.0.0)   — satu-satunya port yang perlu dibuka ke LAN
+#   8081 api    (127.0.0.1) — hanya loopback; diakses lewat proxy nginx web
+#   8082 waha   (127.0.0.1) — hanya loopback; dashboard QR lewat nginx :8010
+#   5432 postgres (127.0.0.1) — hanya loopback, untuk psql/backup dari host
 #
-# .env yang dibutuhkan (Mode B):
+# SEMUA port host dapat diubah lewat .env:
+#   INGATIN_WEB_PORT      (default 8091)
+#   INGATIN_API_PORT      (default 8081)
+#   INGATIN_WAHA_PORT     (default 8082)
+#   INGATIN_PG_PORT       (default 5432) — port di host, bukan di container
+#
+# .env yang dibutuhkan (dibuat otomatis oleh ./install.sh):
 #   INGATIN_DB_URL=postgres://ingatin:<PASSWORD>@postgres:5432/ingatin?sslmode=disable
 #   INGATIN_WAHA_BASE_URL=http://waha:3000
 #   INGATIN_DB_PASSWORD=<PASSWORD>
@@ -35,22 +44,24 @@ services:
   # -------------------------------------------------------------------------
   postgres:
     image: postgres:16-alpine
-    container_name: ingatin-postgres
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${INGATIN_DB_NAME:-ingatin}
       POSTGRES_USER: ${INGATIN_DB_USER:-ingatin}
-      POSTGRES_PASSWORD: ${INGATIN_DB_PASSWORD:?INGATIN_DB_PASSWORD wajib diisi}
+      POSTGRES_PASSWORD: ${INGATIN_DB_PASSWORD:?INGATIN_DB_PASSWORD wajib diisi di .env}
       TZ: ${INGATIN_TIMEZONE:-Asia/Jakarta}
     volumes:
       - pgdata:/var/lib/postgresql/data
+    # Hanya loopback: DB tidak boleh terekspos ke LAN. Ganti INGATIN_PG_PORT
+    # bila 5432 sudah dipakai PostgreSQL host.
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${INGATIN_PG_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${INGATIN_DB_USER:-ingatin} -d ${INGATIN_DB_NAME:-ingatin}"]
       interval: 5s
       timeout: 5s
       retries: 20
+      start_period: 10s
 
   # -------------------------------------------------------------------------
   # Migrasi skema (run-once). api/worker menunggu service ini selesai.
@@ -61,7 +72,6 @@ services:
       args:
         APP_VERSION: ${INGATIN_APP_VERSION:-dev}
     image: ingatin:local
-    container_name: ingatin-migrate
     restart: "no"
     env_file: .env
     environment:
@@ -73,6 +83,9 @@ services:
 
   # -------------------------------------------------------------------------
   # HTTP API
+  #
+  # INGATIN_ADDR wajib 0.0.0.0 di dalam container agar port mapping bekerja;
+  # akses dari luar tetap dibatasi oleh mapping ke 127.0.0.1 dan proxy nginx.
   # -------------------------------------------------------------------------
   api:
     image: ingatin:local
@@ -80,7 +93,6 @@ services:
       context: ./backend
       args:
         APP_VERSION: ${INGATIN_APP_VERSION:-dev}
-    container_name: ingatin-api
     restart: unless-stopped
     env_file: .env
     environment:
@@ -88,7 +100,7 @@ services:
       INGATIN_ADDR: 0.0.0.0:8081
     command: ["-mode=api"]
     ports:
-      - "127.0.0.1:8081:8081"
+      - "127.0.0.1:${INGATIN_API_PORT:-8081}:8081"
     volumes:
       - ingatin_data:/app/data
     depends_on:
@@ -112,7 +124,6 @@ services:
       context: ./backend
       args:
         APP_VERSION: ${INGATIN_APP_VERSION:-dev}
-    container_name: ingatin-worker
     restart: unless-stopped
     env_file: .env
     environment:
@@ -125,42 +136,42 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-      api:
-        condition: service_started
       postgres:
         condition: service_healthy
+      api:
+        condition: service_started
 
   # -------------------------------------------------------------------------
   # WAHA — WhatsApp HTTP API
-  # Hanya diekspos di 127.0.0.1; dashboard QR dapat dilihat lewat nginx :8010
-  # (lihat DEPLOYMENT.md §7.2) atau langsung http://127.0.0.1:8082.
+  #
+  # Hanya listen di loopback; dashboard QR diekspos lewat nginx site :8010
+  # (lihat DEPLOYMENT.md §7.2). API internal memakai port container 3000.
   # -------------------------------------------------------------------------
   waha:
     image: devlikeapro/waha:latest
-    container_name: ingatin-waha
     restart: unless-stopped
     environment:
-      WAHA_API_KEY: ${WAHA_API_KEY}
+      WAHA_API_KEY: ${WAHA_API_KEY:?WAHA_API_KEY wajib diisi di .env}
       WHATSAPP_API_HOSTNAME: "0.0.0.0"
       WHATSAPP_API_PORT: "3000"
       WAHA_DASHBOARD_ENABLED: "true"
       WAHA_DASHBOARD_USERNAME: ${WAHA_DASHBOARD_USERNAME:-noc}
-      WAHA_DASHBOARD_PASSWORD: ${WAHA_DASHBOARD_PASSWORD}
+      WAHA_DASHBOARD_PASSWORD: ${WAHA_DASHBOARD_PASSWORD:?WAHA_DASHBOARD_PASSWORD wajib diisi di .env}
       WHATSAPP_DEFAULT_ENGINE: ${WAHA_ENGINE:-WEBJS}
       # Hemat memori/disk: jangan simpan media lebih lama dari perlu.
       WHATSAPP_FILES_LIFETIME: "0"
       WAHA_PRINT_QR: "false"
       TZ: ${INGATIN_TIMEZONE:-Asia/Jakarta}
     ports:
-      - "127.0.0.1:8082:3000"
+      - "127.0.0.1:${INGATIN_WAHA_PORT:-8082}:3000"
     volumes:
       - waha_sessions:/app/.sessions
 
   # -------------------------------------------------------------------------
   # Web (nginx + SPA).
   #
-  # Nginx meneruskan /api ke service `api` dan halaman QR WAHA ke `waha`.
-  # Mendengarkan pada port INGATIN_WEB_PORT (default 8091).
+  # Meneruskan /api ke service `api` (nama service, bukan loopback) dan
+  # mendengarkan pada port INGATIN_WEB_PORT (default 8091).
   # -------------------------------------------------------------------------
   web:
     build:
@@ -168,10 +179,10 @@ services:
       args:
         INGATIN_WEB_PORT: ${INGATIN_WEB_PORT:-8091}
     image: ingatin-web:local
-    container_name: ingatin-web
     restart: unless-stopped
     environment:
       INGATIN_WEB_PORT: ${INGATIN_WEB_PORT:-8091}
+      INGATIN_API_UPSTREAM: ${INGATIN_API_UPSTREAM:-http://api:8081}
     ports:
       - "${INGATIN_WEB_PORT:-8091}:${INGATIN_WEB_PORT:-8091}"
     depends_on:

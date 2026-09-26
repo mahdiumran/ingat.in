@@ -112,8 +112,13 @@ fi
 # ---------------------------------------------------------------------------
 head "3. Database"
 # ---------------------------------------------------------------------------
+# Pada Mode B (PostgreSQL container), INGATIN_DB_URL menunjuk ke host 'postgres'
+# yang hanya dapat di-resolve dari dalam network Compose. Untuk pemeriksaan dari
+# host, ganti host:port container (postgres:5432) menjadi loopback + port host.
+DB_CHECK_URL="${INGATIN_DB_URL:-}"
+DB_CHECK_URL="${DB_CHECK_URL/@postgres:5432\//@127.0.0.1:${INGATIN_PG_PORT:-5432}\/}"
 if command -v psql >/dev/null 2>&1; then
-  if [[ "$INGATIN_DB_URL" =~ ^postgres(ql)?://([^:]+):([^@]+)@(.+)$ ]]; then
+  if [[ "$DB_CHECK_URL" =~ ^postgres(ql)?://([^:]+):([^@]+)@(.+)$ ]]; then
     DB_USER="${BASH_REMATCH[2]}"
     DB_PASS="${BASH_REMATCH[3]}"
     DB_REST="${BASH_REMATCH[4]}"
@@ -326,7 +331,11 @@ fi
 # ---------------------------------------------------------------------------
 head "5. WAHA (opsional)"
 # ---------------------------------------------------------------------------
+# Mode B: INGATIN_WAHA_BASE_URL memakai host 'waha' (DNS internal Compose) yang
+# tidak dapat di-resolve dari host. Untuk pemeriksaan dari host, arahkan ke
+# port yang dipetakan (INGATIN_WAHA_PORT, default 8082).
 WAHA_URL="${INGATIN_WAHA_BASE_URL:-http://127.0.0.1:8082}"
+WAHA_URL="${WAHA_URL/http:\/\/waha:3000/http:\/\/127.0.0.1:${INGATIN_WAHA_PORT:-8082}}"
 WAHA_KEY="${WAHA_API_KEY:-${INGATIN_WAHA_API_KEY:-}}"
 
 if [[ -n "$WAHA_KEY" ]]; then

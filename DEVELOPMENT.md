@@ -39,10 +39,12 @@ Build di Docker tidak terpengaruh (`golang:1.25-alpine` di stage builder).
 ```bash
 cd /path/ke/ingat.in
 cp .env.example .env      # sesuaikan secret
-./scripts/provision-db.sh # bila memakai PG host
-docker compose up -d --build
+docker compose up -d --build   # PostgreSQL container dibuat otomatis (Mode B)
 docker compose logs -f api worker
 ```
+
+> `./scripts/provision-db.sh` hanya diperlukan bila memakai PostgreSQL **host**
+> (Mode A). Pada Mode B (default) role & database dibuat otomatis oleh container.
 
 ### 2.2 Jalankan backend langsung (untuk iterasi cepat)
 

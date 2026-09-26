@@ -55,8 +55,9 @@ Browser → ingatin-web (nginx :8091) → /api → ingatin -mode=api (:8081)
 ## Prasyarat
 
 - Docker Engine + Docker Compose v2 (`docker compose`)
-- `openssl`
-- PostgreSQL 15 (host atau container) — user & database akan dibuat oleh installer
+- `openssl` dan `curl`
+- PostgreSQL **tidak perlu** di host — installer menjalankan PostgreSQL 16 sebagai
+  container (Mode B). Lihat `DEPLOYMENT.md §5.2` untuk Mode A (reuse host).
 
 ---
 
@@ -67,7 +68,7 @@ Browser → ingatin-web (nginx :8091) → /api → ingatin -mode=api (:8081)
 git clone <URL-REPO> ingat.in
 cd ingat.in
 
-# 2. Pasang (membuat .env + secret, DB, build, jalankan semua service)
+# 2. Pasang (preflight, buat .env + secret, build, jalankan semua service)
 ./install.sh
 ```
 
@@ -154,9 +155,9 @@ docker compose up -d --build
 ingat.in/
 ├── README.md  PLAN.md  ROADMAP.md  DEPLOYMENT.md  OPERATIONS.md
 ├── BACKUP_RESTORE.md  DEVELOPMENT.md  DESIGN.md
-├── docker-compose.yml           # 1 image, 5 service
+├── docker-compose.yml           # 1 image, 6 service (PostgreSQL container)
 ├── install.sh  uninstall.sh  .env.example  VERSION
-├── scripts/                     # provision-db, backup, restore, smoke
+├── scripts/                     # provision-db (Mode A), backup, restore, smoke
 ├── backend/
 │   ├── cmd/ingatin/             # entrypoint (-mode api|worker|migrate)
 │   └── internal/                # config, crypto, db(+migrations), models,

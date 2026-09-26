@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 #
-# provision-db.sh — membuat role & database Ingat.in di PostgreSQL host.
+# provision-db.sh — membuat role & database Ingat.in di PostgreSQL HOST.
+#
+# CATATAN PENTING: skrip ini HANYA untuk Mode A (PostgreSQL yang sudah ada di
+# host). Pada Mode B (default saat ini; PostgreSQL sebagai container), role dan
+# database dibuat otomatis oleh image `postgres` dari variabel POSTGRES_* di
+# docker-compose.yml — skrip ini TIDAK diperlukan.
 #
 # Idempoten: aman dijalankan berulang.
 #   - role   : dibuat bila belum ada, password selalu disinkronkan ke INGATIN_DB_PASSWORD
@@ -59,17 +64,20 @@ for ident in "$DB_NAME" "$DB_USER"; do
   [[ "$ident" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || fail "nama identifier tidak valid: $ident"
 done
 
-if [[ "$EUID" -eq 0 ]]; then
-  command -v runuser >/dev/null 2>&1 || fail "runuser tidak ditemukan. Install util-linux."
+command -v getent >/dev/null 2>&1 || fail "getent tidak ditemukan; tidak dapat memverifikasi user PostgreSQL."
+getent passwd "$PG_SUPERUSER" >/dev/null 2>&1 \
+  || fail "user sistem '$PG_SUPERUSER' tidak ada. Install PostgreSQL host terlebih dahulu, atau gunakan Mode B (PostgreSQL container)."
+
+if [[ "$EUID" -eq 0 ]] && command -v runuser >/dev/null 2>&1; then
   PSQL=(runuser -u "$PG_SUPERUSER" -- psql)
 elif command -v sudo >/dev/null 2>&1; then
   PSQL=(sudo -u "$PG_SUPERUSER" psql)
 else
-  fail "sudo tidak ditemukan; jalankan installer sebagai root."
+  fail "runuser/su/sudo tidak ditemukan; install util-linux atau sudo."
 fi
 
-if ! "${PSQL[@]}" -tAc 'SELECT 1' >/dev/null 2>&1; then
-  fail "tidak dapat terhubung sebagai superuser PostgreSQL '$PG_SUPERUSER'."
+if ! PSQL_ERROR="$("${PSQL[@]}" -tAc 'SELECT 1' 2>&1 >/dev/null)"; then
+  fail "tidak dapat terhubung sebagai superuser PostgreSQL '$PG_SUPERUSER': $PSQL_ERROR"
 fi
 
 log "PostgreSQL terdeteksi; menyiapkan role '$DB_USER' dan database '$DB_NAME'"

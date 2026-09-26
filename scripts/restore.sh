@@ -43,8 +43,36 @@ fi
 DB_URL="${INGATIN_DB_URL:-}"
 [[ -z "$DB_URL" ]] && fail "INGATIN_DB_URL tidak diset (periksa .env)"
 
-command -v psql >/dev/null 2>&1 || fail "psql tidak ditemukan. Install postgresql-client."
 command -v gzip >/dev/null 2>&1 || fail "gzip tidak ditemukan."
+
+# ---------------------------------------------------------------------------
+# Tentukan mode koneksi (lihat backup.sh untuk penjelasan lengkap).
+# Mode B: psql dijalankan di dalam container PostgreSQL (versi klien cocok).
+# Mode A: psql dijalankan di host dengan host:port di-remap ke loopback.
+# ---------------------------------------------------------------------------
+MODE_B=0
+PG_CONTAINER="${INGATIN_PG_CONTAINER:-}"
+if [[ -n "$PG_CONTAINER" ]]; then
+  MODE_B=1
+elif [[ "$DB_URL" == *"@postgres:5432/"* ]]; then
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'ingatin-postgres'; then
+    PG_CONTAINER="ingatin-postgres"
+    MODE_B=1
+  else
+    PG_CONTAINER="$(docker ps --filter 'label=com.docker.compose.service=postgres' \
+      --format '{{.Names}}' 2>/dev/null | head -1)"
+    if [[ -n "$PG_CONTAINER" ]]; then
+      MODE_B=1
+    else
+      fail "container PostgreSQL tidak ditemukan. Jalankan 'docker compose up -d postgres' terlebih dahulu, atau set INGATIN_PG_CONTAINER."
+    fi
+  fi
+fi
+
+if [[ "$MODE_B" == "0" ]]; then
+  DB_URL="${DB_URL/@postgres:5432\//@127.0.0.1:${INGATIN_PG_PORT:-5432}\/}"
+  command -v psql >/dev/null 2>&1 || fail "psql tidak ditemukan. Install postgresql-client atau gunakan Mode B."
+fi
 
 # ---------------------------------------------------------------------------
 # 1. Verifikasi checksum
@@ -103,7 +131,10 @@ SAFETY="$PROJECT_DIR/backups/pre-restore-$(date -u '+%Y%m%d-%H%M%S').sql.gz"
 mkdir -p "$(dirname "$SAFETY")"
 log "membuat backup pengaman -> $(basename "$SAFETY")"
 
-if [[ -n "$DB_PASS" ]]; then
+if [[ "$MODE_B" == "1" ]]; then
+  docker exec -e PGPASSWORD="$DB_PASS" "$PG_CONTAINER" \
+    pg_dump --no-owner --no-acl -U "$DB_USER" -d "$DB_NAME" | gzip -9 > "$SAFETY"
+elif [[ -n "$DB_PASS" ]]; then
   PGPASSWORD="$DB_PASS" pg_dump --no-owner --no-acl "$SANITIZED_URL" | gzip -9 > "$SAFETY"
 else
   pg_dump --no-owner --no-acl "$SANITIZED_URL" | gzip -9 > "$SAFETY"
@@ -114,14 +145,44 @@ log "backup pengaman OK: $(du -h "$SAFETY" | cut -f1)"
 
 # ---------------------------------------------------------------------------
 # 5. Restore
+#
+# Dump dibuat dengan pg_dump polos (tanpa DROP), sehingga memuatnya ke database
+# yang sudah berisi skema akan gagal ("relation already exists"). Karena backup
+# pengaman sudah dibuat di langkah 4, kita kosongkan schema public lebih dulu.
 # ---------------------------------------------------------------------------
+log "mengosongkan schema public pada database '$DB_NAME'"
+
+reset_cmd() {
+  if [[ "$MODE_B" == "1" ]]; then
+    docker exec -i -e PGPASSWORD="$DB_PASS" "$PG_CONTAINER" \
+      psql -v ON_ERROR_STOP=1 -q -U "$DB_USER" -d "$DB_NAME" \
+      -c "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;"
+  elif [[ -n "$DB_PASS" ]]; then
+    PGPASSWORD="$DB_PASS" psql -v ON_ERROR_STOP=1 -q "$SANITIZED_URL" \
+      -c "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;"
+  else
+    psql -v ON_ERROR_STOP=1 -q "$SANITIZED_URL" \
+      -c "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;"
+  fi
+}
+
+if ! reset_cmd; then
+  fail "gagal mengosongkan schema. Backup pengaman tersedia di: $SAFETY"
+fi
+
 log "memulihkan database..."
 
 restore_cmd() {
-  if [[ -n "$DB_PASS" ]]; then
-    PGPASSWORD="$DB_PASS" psql -v ON_ERROR_STOP=1 --no-owner --no-acl -q "$SANITIZED_URL"
+  # Catatan: psql TIDAK mengenal --no-owner/--no-acl (itu opsi pg_dump/pg_restore).
+  # Karena dump dibuat dengan --no-owner --no-acl, pernyataan SET OWNER sudah
+  # tidak ada sehingga psql aman dimuat apa adanya.
+  if [[ "$MODE_B" == "1" ]]; then
+    docker exec -i -e PGPASSWORD="$DB_PASS" "$PG_CONTAINER" \
+      psql -v ON_ERROR_STOP=1 -q -U "$DB_USER" -d "$DB_NAME"
+  elif [[ -n "$DB_PASS" ]]; then
+    PGPASSWORD="$DB_PASS" psql -v ON_ERROR_STOP=1 -q "$SANITIZED_URL"
   else
-    psql -v ON_ERROR_STOP=1 --no-owner --no-acl -q "$SANITIZED_URL"
+    psql -v ON_ERROR_STOP=1 -q "$SANITIZED_URL"
   fi
 }
 
@@ -134,7 +195,12 @@ fi
 # 6. Verifikasi
 # ---------------------------------------------------------------------------
 log "verifikasi hasil restore"
-if [[ -n "$DB_PASS" ]]; then
+if [[ "$MODE_B" == "1" ]]; then
+  docker exec -e PGPASSWORD="$DB_PASS" "$PG_CONTAINER" \
+    psql -tAc "SELECT count(*) FROM work_items" -U "$DB_USER" -d "$DB_NAME" >/dev/null 2>&1 \
+    && log "tabel work_items dapat dibaca" \
+    || log "peringatan: tidak dapat membaca work_items (periksa manual)"
+elif [[ -n "$DB_PASS" ]]; then
   PGPASSWORD="$DB_PASS" psql -tAc "SELECT count(*) FROM work_items" "$SANITIZED_URL" >/dev/null 2>&1 \
     && log "tabel work_items dapat dibaca" \
     || log "peringatan: tidak dapat membaca work_items (periksa manual)"

@@ -16,9 +16,9 @@ yang berjalan di atas Docker Compose.
 
 | Aspek | Nilai |
 |---|---|
-| Engine | PostgreSQL 14+ (server ini: PostgreSQL 15.19 host) |
-| Alat dump | `pg_dump` (postgresql-client) |
-| Alat restore | `psql` |
+| Engine | PostgreSQL 16 (container `ingatin-postgres`; Mode A: PostgreSQL 14+ host) |
+| Alat dump | `pg_dump` — dijalankan **di dalam container** pada Mode B |
+| Alat restore | `psql` — dijalankan **di dalam container** pada Mode B |
 | Format | Dump SQL teks → `gzip -9` → `.sql.gz` |
 | Lokasi backup | `backups/` (default; dapat dioverride `BACKUP_DIR`) |
 | Nama file | `ingatin-db-YYYYMMDD-HHMMSS.sql.gz` |
@@ -26,7 +26,7 @@ yang berjalan di atas Docker Compose.
 | Retensi default | 14 hari (via `KEEP_DAYS` / `INGATIN_BACKUP_KEEP_DAYS`) |
 | Script | `scripts/backup.sh`, `scripts/restore.sh` |
 
-Backup menyalin **seluruh database** (semua tabel, ~31 tabel), bukan hanya tabel
+Backup menyalin **seluruh database** (semua tabel), bukan hanya tabel
 aplikasi. Tabel `work_items` dipakai oleh `restore.sh` sebagai verifikasi baca
 setelah restore.
 
@@ -34,9 +34,13 @@ setelah restore.
 
 ## 2. Prasyarat
 
-`pg_dump` dan `psql` harus tersedia, plus `gzip`. Backend image runtime sudah
-memasang `postgresql-client gzip` (lihat `backend/Dockerfile`), tetapi **script
-dijalankan di host**, jadi host wajib punya client:
+`gzip` harus tersedia di host. **`pg_dump`/`psql` host TIDAK diperlukan pada
+Mode B**: script menjalankan `pg_dump`/`psql` di dalam container PostgreSQL
+sehingga versi klien selalu cocok dengan server (menghindari error
+`server version mismatch`).
+
+Pada Mode A (PostgreSQL host), host wajib punya `postgresql-client` dengan versi
+yang kompatibel:
 
 ```bash
 # Debian/Ubuntu
@@ -54,12 +58,16 @@ Script membaca koneksi dari `.env` (`INGATIN_DB_URL`). Jika variabel itu tidak
 ada, script berhenti dengan error.
 
 ```env
-# Mode A — PostgreSQL host (dipakai sekarang)
-INGATIN_DB_URL=postgres://ingatin:<PASSWORD>@127.0.0.1:5432/ingatin?sslmode=disable
-
-# Mode B — PostgreSQL container (server baru)
+# Mode B — PostgreSQL container (default)
 INGATIN_DB_URL=postgres://ingatin:<PASSWORD>@postgres:5432/ingatin?sslmode=disable
+
+# Mode A — PostgreSQL host (alternatif)
+INGATIN_DB_URL=postgres://ingatin:<PASSWORD>@127.0.0.1:5432/ingatin?sslmode=disable
 ```
+
+Pada Mode B, script otomatis menemukan container `postgres` (berdasarkan nama
+`ingatin-postgres` atau label Compose). Bila nama berbeda, set
+`INGATIN_PG_CONTAINER=<nama-container>`.
 
 > Password **tidak** muncul di daftar proses: script memisahkan kredensial dari
 > URL dan mengirimkan password lewat `PGPASSWORD`.
@@ -78,8 +86,9 @@ cd /path/ke/ingat.in
 Alur yang dilakukan `backup.sh`:
 
 1. Memuat `.env` dan memvalidasi `INGATIN_DB_URL`.
-2. Memastikan `pg_dump` dan `gzip` tersedia.
-3. `pg_dump --no-owner --no-acl` → pipe ke `gzip -9` → file `.part`.
+2. Menentukan mode: Mode B (container `postgres`) atau Mode A (host) + `gzip`.
+3. `pg_dump --no-owner --no-acl` (di dalam container pada Mode B) → pipe ke
+   `gzip -9` → file `.part`.
 4. Memverifikasi hasil tidak kosong dan arsip gzip tidak rusak (`gzip -t`).
 5. Rename `.part` ke nama final (atomic).
 6. Menulis checksum `sha256`.
@@ -89,6 +98,7 @@ Contoh keluaran:
 
 ```
 [backup] memulai backup -> ingatin-db-20260101-020000.sql.gz
+[backup] menggunakan container PostgreSQL: ingatin-postgres
 [backup] selesai: ingatin-db-20260101-020000.sql.gz (12M)
 [backup] sha256: 3f2a...e91c
 [backup] rotasi selesai (1 file dihapus)
@@ -101,6 +111,7 @@ Contoh keluaran:
 |---|---|---|
 | `BACKUP_DIR` | `<project>/backups` | Direktori tujuan backup |
 | `KEEP_DAYS` | `INGATIN_BACKUP_KEEP_DAYS` atau `14` | Retensi dalam hari |
+| `INGATIN_PG_CONTAINER` | auto-detect | Nama container PostgreSQL (Mode B) |
 
 Contoh mengubah retensi & lokasi:
 
@@ -116,21 +127,19 @@ KEEP_DAYS=30 BACKUP_DIR=/mnt/backup/ingatin ./scripts/backup.sh
 
 Isi `INGATIN_BACKUP_KEEP_DAYS` di `.env` untuk mengatur retensi dari cron.
 
-### 3.4 Backup dari dalam container (alternatif)
+### 3.4 Backup langsung dari container PostgreSQL (alternatif)
 
-Bila client DB tidak ingin dipasang di host, jalankan langsung di container
-`api` (network_mode host, sehingga `127.0.0.1:5432` terjangkau):
+Setara dengan isi `backup.sh` Mode B, tanpa memerlukan `pg_dump` di host:
 
 ```bash
-docker compose exec api sh -c \
-  'PGPASSWORD="$INGATIN_DB_PASSWORD" pg_dump --no-owner --no-acl \
-   "postgresql://$INGATIN_DB_USER@127.0.0.1:5432/$INGATIN_DB_NAME" \
-   | gzip -9' > backups/manual-$(date -u +%Y%m%d-%H%M%S).sql.gz
+docker compose exec postgres sh -c \
+  'PGPASSWORD="$POSTGRES_PASSWORD" pg_dump --no-owner --no-acl \
+   -U "$POSTGRES_USER" -d "$POSTGRES_DB" | gzip -9' \
+  > backups/manual-$(date -u +%Y%m%d-%H%M%S).sql.gz
 ```
 
-> Sesuaikan nama variabel dengan yang ada di `.env`. Cara paling aman tetap
-> memakai `scripts/backup.sh` karena sudah menangani kredensial, checksum, dan
-> rotasi.
+> Cara paling aman tetap memakai `scripts/backup.sh` karena sudah menangani
+> kredensial, checksum, dan rotasi.
 
 ---
 
@@ -157,9 +166,13 @@ Alur yang dilakukan `restore.sh`:
 2. Memvalidasi arsip `gzip -t`.
 3. Menampilkan peringatan destruktif dan meminta konfirmasi (`RESTORE`).
 4. **Membuat backup pengaman** ke `backups/pre-restore-YYYYMMDD-HHMMSS.sql.gz`.
-5. `gunzip -c | psql -v ON_ERROR_STOP=1 --no-owner --no-acl` (berhenti pada error
-   pertama agar tidak meninggalkan restore separuh jalan).
-6. Verifikasi baca `SELECT count(*) FROM work_items`.
+5. Mengosongkan schema `public` (`DROP SCHEMA ... CASCADE; CREATE SCHEMA public;`)
+   agar dump dapat dimuat ke database yang sudah berisi skema.
+6. `gunzip -c | psql -v ON_ERROR_STOP=1` (berhenti pada error pertama agar tidak
+   meninggalkan restore separuh jalan).
+7. Verifikasi baca `SELECT count(*) FROM work_items`.
+
+Pada Mode B, langkah 4–6 dijalankan di dalam container `postgres`.
 
 ### 4.2 Mode non-interaktif (otomasi)
 
@@ -175,22 +188,28 @@ yang sudah teruji. Backup pengaman **tetap** dibuat.
 Jangan uji ke produksi. Buat database sementara, restore ke sana, lalu hapus.
 
 ```bash
-# 1) Buat DB uji
-sudo -u postgres createdb -O ingatin ingatin_restore_test
+# 1) Buat DB uji (di dalam container PostgreSQL, Mode B)
+docker compose exec postgres sh -c \
+  'psql -U "$POSTGRES_USER" -d postgres -c "CREATE DATABASE ingatin_restore_test OWNER $POSTGRES_USER"'
 
 # 2) Restore ke DB uji (tanpa menyentuh produksi)
 gunzip -c backups/ingatin-db-YYYYMMDD-HHMMSS.sql.gz | \
-  PGPASSWORD='<PASSWORD>' psql -v ON_ERROR_STOP=1 --no-owner --no-acl \
-  "postgresql://ingatin@127.0.0.1:5432/ingatin_restore_test"
+  docker compose exec -T postgres sh -c \
+  'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d ingatin_restore_test'
 
 # 3) Verifikasi isi
-PGPASSWORD='<PASSWORD>' psql -d ingatin_restore_test \
-  -c "SELECT count(*) FROM work_items" \
-  -c "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'"
+docker compose exec postgres sh -c \
+  'psql -U "$POSTGRES_USER" -d ingatin_restore_test \
+   -c "SELECT count(*) FROM work_items" \
+   -c "SELECT count(*) FROM information_schema.tables WHERE table_schema=\$\$public\$\$"'
 
 # 4) Bersihkan
-sudo -u postgres dropdb ingatin_restore_test
+docker compose exec postgres sh -c \
+  'psql -U "$POSTGRES_USER" -d postgres -c "DROP DATABASE ingatin_restore_test"'
 ```
+
+> Mode A (host): gunakan `sudo -u postgres createdb/dropdb` dan `psql` host
+> seperti sebelumnya.
 
 Catat tanggal uji terakhir di checklist §7.
 
@@ -221,9 +240,11 @@ gunzip -c ingatin-db-20260101-020000.sql.gz | grep -E '^CREATE TABLE' | head
 
 | Gejala | Penyebab | Tindakan |
 |---|---|---|
-| `pg_dump: command not found` | client tidak ada di host | `apt-get install postgresql-client` |
+| `pg_dump: command not found` (Mode A) | client tidak ada di host | `apt-get install postgresql-client`, atau pakai Mode B |
+| `pg_dump: server version mismatch` | `pg_dump` host lebih lama dari server | Pakai `./scripts/backup.sh` (otomatis memakai container di Mode B) |
+| `container PostgreSQL tidak ditemukan` | container `postgres` tidak berjalan / nama beda | `docker compose up -d postgres`; atau set `INGATIN_PG_CONTAINER` |
 | `INGATIN_DB_URL tidak diset` | `.env` hilang/kosong | periksa `.env` di root proyek |
-| `connection refused` ke `127.0.0.1:5432` | PostgreSQL mati / bukan di host | `systemctl status postgresql`; cek mode A vs B |
+| `connection refused` ke `127.0.0.1:5432` (Mode A) | PostgreSQL mati / bukan di host | `systemctl status postgresql`; cek mode A vs B |
 | `hasil backup kosong` | DB kosong / URL salah DB | cek `INGATIN_DB_URL` & hak akses role |
 | `checksum tidak cocok` | file backup korup | ambil backup lain; jangan restore file ini |
 | `permission denied for schema public` saat restore | role bukan pemilik DB | `sudo -u postgres psql -c 'ALTER DATABASE ingatin OWNER TO ingatin'` |

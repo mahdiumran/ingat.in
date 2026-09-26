@@ -21,8 +21,11 @@ FROM nginx:1.27-alpine
 RUN rm -f /etc/nginx/conf.d/default.conf
 COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
 
-# Port default bila INGATIN_WEB_PORT tidak diset.
-ENV INGATIN_WEB_PORT=8091
+# Nilai default bila tidak diset dari compose.
+# - INGATIN_WEB_PORT: port listen nginx.
+# - INGATIN_API_UPSTREAM: alamat backend API (service `api` di network Compose).
+ENV INGATIN_WEB_PORT=8091 \
+    INGATIN_API_UPSTREAM=http://api:8081
 
 COPY --from=builder /app/dist /usr/share/nginx/html
 

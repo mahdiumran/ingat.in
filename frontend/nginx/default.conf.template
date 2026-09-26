@@ -1,12 +1,17 @@
 # Ingat.in — nginx (SPA + proxy API)
 #
-# Container ini menjangkau API lewat network Compose menggunakan nama service
-# `api`. Port listen ditentukan oleh INGATIN_WEB_PORT agar tidak konflik dengan
-# nginx host atau layanan lain.
+# Template ini diproses oleh docker-entrypoint nginx: placeholder ${...}
+# digantikan saat container start (lihat /etc/nginx/templates/*.template
+# pada image nginx resmi).
 #
-# Template ini diproses oleh docker-entrypoint nginx: placeholder
-# ${INGATIN_WEB_PORT} digantikan saat container start (lihat
-# /etc/nginx/templates/*.template pada image nginx resmi).
+# - INGATIN_WEB_PORT      : port listen nginx (default 8091)
+# - INGATIN_API_UPSTREAM  : alamat backend API (default http://api:8081).
+#   Pada Mode B (semua service di bridge network) nilai default sudah benar
+#   karena nginx menjangkau service `api` lewat DNS internal Compose.
+#   Nilai ini dapat ditimpa bila backend dijalankan di host lain.
+#
+# Port listen ditentukan INGATIN_WEB_PORT (bukan 80) agar di dalam container
+# tidak memerlukan hak root dan tidak berkonflik dengan nginx host.
 
 server {
     listen ${INGATIN_WEB_PORT} default_server;
@@ -33,9 +38,9 @@ server {
         try_files $uri =404;
     }
 
-    # API diteruskan ke container `api` pada network Compose.
+    # API diteruskan ke backend (service `api` lewat DNS internal Compose).
     location /api/ {
-        proxy_pass http://api:8081;
+        proxy_pass ${INGATIN_API_UPSTREAM};
         proxy_http_version 1.1;
         proxy_set_header Host              $host;
         proxy_set_header X-Real-IP         $remote_addr;

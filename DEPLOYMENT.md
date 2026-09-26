@@ -15,31 +15,35 @@ Panduan deploy, konfigurasi, dan pemulihan **Ingat.in** (Go + PostgreSQL + WAHA)
 | OS | Debian 12 / Ubuntu 22.04+ | Rujukan: Debian 12 (bookworm) |
 | Docker Engine | 24+ | `docker --version` |
 | Docker Compose | v2 plugin | `docker compose version` |
-| PostgreSQL | 14+ (host atau container) | Server ini: PostgreSQL **15.19** host |
-| `sudo` akses ke user `postgres` | — | Untuk provisioning role & DB (mode reuse host) |
-| RAM | 1.5 GB bebas | WAHA/Chromium butuh ±400–800 MB |
-| Disk | 5 GB bebas | DB + backup + WAHA session |
+| PostgreSQL | — | **Tidak perlu di host** (Mode B memakai container PostgreSQL 16) |
+| RAM | 1.5 GB bebas | WAHA/Chromium ±400–800 MB + PostgreSQL + API |
+| Disk | 5 GB bebas | image + data + backup + WAHA session |
+
+> Untuk Mode A (reuse PostgreSQL host) diperlukan PostgreSQL 14+ di host dan
+> akses `sudo` ke user `postgres`. Lihat §5.2.
 
 ### 1.2 Port (default)
 
-| Port | Service | Bind | Wajib bebas |
+| Port | Service | Bind | Keterangan |
 |---|---|---|---|
-| `8091` | Web UI | `0.0.0.0` | Ya |
-| `8081` | API | `127.0.0.1` | Ya |
-| `8082` | WAHA | `127.0.0.1` | Ya |
-| `8010` | QR dashboard WAHA (nginx) | LAN/Tailscale | F3 |
+| `8091` | Web UI (nginx) | `0.0.0.0` | Satu-satunya port yang perlu dibuka ke LAN |
+| `8081` | API | `127.0.0.1` | Hanya loopback; diakses lewat proxy `web` |
+| `8082` | WAHA | `127.0.0.1` | Hanya loopback; QR lewat nginx `:8010` |
+| `5432` | PostgreSQL | `127.0.0.1` | Hanya loopback; untuk psql/backup dari host |
+| `8010` | QR dashboard WAHA (nginx host) | LAN/Tailscale | Opsional (F3) |
 
-Cek ketersediaan:
+Semua port dapat diubah lewat `.env` (`INGATIN_WEB_PORT`, `INGATIN_API_PORT`,
+`INGATIN_WAHA_PORT`, `INGATIN_PG_PORT`). Cek ketersediaan:
 
 ```bash
-ss -ltnp | grep -E ':(8091|8081|8082|8010)\b' || echo "semua port bebas"
+ss -ltnp | grep -E ':(8091|8081|8082|5432|8010)\b' || echo "semua port bebas"
 ```
 
 ---
 
-## 2. Instalasi Cepat (Mode Reuse PostgreSQL Host)
+## 2. Instalasi Cepat (Mode B — PostgreSQL container)
 
-Mode ini dipakai di server ini: PostgreSQL host yang sudah ada dipakai ulang.
+Cara termudah, cocok untuk **server baru tanpa PostgreSQL host**:
 
 ```bash
 cd /path/ke/ingat.in
@@ -48,14 +52,20 @@ cd /path/ke/ingat.in
 
 `install.sh` melakukan:
 
-1. Cek Docker & Docker Compose.
-2. Generate `.env` dengan secret acak (mode `600`):
-   `INGATIN_SECRET_KEY`, `INGATIN_CREDENTIAL_KEY` (32 byte), password role `ingatin`,
-   `WAHA_API_KEY`, kredensial dashboard WAHA.
-3. Provision role `ingatin` + database `ingatin` di PostgreSQL host (via `sudo -u postgres`).
-4. `docker compose build` lalu `docker compose up -d`.
-5. Menjalankan migrasi (service `migrate`) dan menunggu `api`/`worker` sehat.
+1. Preflight: Docker & Compose v2, `openssl`, `curl`, cek disk/RAM, dan cek
+   ketersediaan port `8091` / `8081` / `8082` / `5432`.
+2. Generate `.env` dengan secret acak (mode `600`): `INGATIN_SECRET_KEY`,
+   `INGATIN_CREDENTIAL_KEY` (32 byte), password database, `WAHA_API_KEY`,
+   kredensial dashboard WAHA. Semua variabel lain (port, retensi, backup,
+   lampiran, dll.) ikut ditulis dengan nilai default yang aman.
+3. `docker compose build --pull` lalu `docker compose up -d`. PostgreSQL 16
+   berjalan sebagai container dengan volume `pgdata` — tidak perlu PostgreSQL
+   host.
+4. Menunggu PostgreSQL `healthy`, migrasi selesai, dan API sehat.
+5. (Opsional) menyiapkan situs nginx host untuk dashboard QR WAHA di port `8010`.
 6. Mencetak URL akses dan kredensial admin awal.
+
+Opsi: `--no-build` (lewati build), `--no-qr-site` (jangan sentuh nginx host).
 
 Setelah selesai:
 
@@ -64,6 +74,9 @@ Web UI    : http://<IP-SERVER>:8091
 API       : http://127.0.0.1:8081/api/health
 WAHA      : http://127.0.0.1:8082  (via nginx QR :8010, F3)
 ```
+
+> Port host dapat diubah lewat `.env` (`INGATIN_WEB_PORT`, `INGATIN_API_PORT`,
+> `INGATIN_WAHA_PORT`, `INGATIN_PG_PORT`) bila bentrok dengan service lain.
 
 ---
 
@@ -81,18 +94,19 @@ chmod 600 .env
 #    openssl rand -hex 32                 -> INGATIN_SECRET_KEY
 #    openssl rand -base64 24 | cut -c1-32 -> INGATIN_CREDENTIAL_KEY (tepat 32 byte)
 #    openssl rand -hex 20                 -> INGATIN_DB_PASSWORD / WAHA_API_KEY
+#    (.env.example pada Mode B sudah memakai host `postgres` dan `waha`.)
 
-# 2) Provision database (reuse host PG)
-./scripts/provision-db.sh
-
-# 3) Build & jalankan
+# 2) Build & jalankan (PostgreSQL container dibuat otomatis)
 docker compose build
 docker compose up -d
 
-# 4) Verifikasi
+# 3) Verifikasi
 docker compose ps
 curl -s http://127.0.0.1:8081/api/health
 ```
+
+> Tidak perlu `scripts/provision-db.sh` pada Mode B — role & database dibuat
+> otomatis oleh image `postgres` dari variabel `POSTGRES_*` di compose.
 
 ---
 
@@ -106,7 +120,7 @@ Semua variabel memakai prefix `INGATIN_*`. Lihat `.env.example` untuk daftar len
 |---|---|---|
 | `INGATIN_SECRET_KEY` | `openssl rand -hex 32` | Signing JWT. **Ganti dari default.** |
 | `INGATIN_CREDENTIAL_KEY` | tepat **32 karakter** | AES-256-GCM untuk enkripsi API key provider. **Panjang harus 32 byte** atau aplikasi menolak start. |
-| `INGATIN_DB_URL` | `postgres://ingatin:***@127.0.0.1:5432/ingatin?sslmode=disable` | Mode host. Lihat §6 untuk mode container. |
+| `INGATIN_DB_URL` | `postgres://ingatin:***@postgres:5432/ingatin?sslmode=disable` | Mode B: host `postgres`. Mode A: ganti ke `127.0.0.1`. |
 | `INGATIN_ADMIN_USERNAME` | `admin` | Dibuat saat bootstrap bila belum ada. |
 | `INGATIN_ADMIN_PASSWORD` | kata sandi kuat | Diganti setelah login pertama. |
 
@@ -128,8 +142,9 @@ Semua variabel memakai prefix `INGATIN_*`. Lihat `.env.example` untuk daftar len
 
 | Variabel | Default | Keterangan |
 |---|---|---|
-| `INGATIN_WAHA_BASE_URL` | `http://127.0.0.1:8082` | Alamat WAHA |
+| `INGATIN_WAHA_BASE_URL` | `http://waha:3000` | Alamat WAHA (host = service Compose `waha`, port internal 3000) |
 | `INGATIN_WAHA_API_KEY` | di-generate | Header `X-Api-Key` |
+| `INGATIN_WAHA_QR_URL` | kosong / `http://<ip>:8010` | URL dashboard QR yang ditampilkan di panel |
 | `WAHA_API_KEY` | sama dengan di atas | Dibaca container WAHA |
 | `WAHA_DASHBOARD_USERNAME` / `_PASSWORD` | di-generate | Login dashboard QR |
 
@@ -154,55 +169,61 @@ Spreadsheet ID, nama sheet, dan service account JSON dikelola dari panel
 
 ## 5. Detail Database
 
-### 5.1 Mode A — Reuse PostgreSQL Host (dipakai sekarang)
+### 5.1 Mode B — PostgreSQL Container (default, direkomendasikan)
 
-Karakteristik PG host di server ini (terverifikasi):
+`docker-compose.yml` bawaan menjalankan PostgreSQL 16 sebagai container dengan
+volume `pgdata`. Semua service berada pada **bridge network milik Compose** dan
+saling menjangkau lewat nama service (`postgres`, `waha`, `api`).
 
 | Item | Nilai |
 |---|---|
-| Versi | PostgreSQL 15.19 (Debian) |
-| Cluster | `15/main`, port `5432`, unix socket `/var/run/postgresql` |
-| `listen_addresses` | `localhost` (hanya `127.0.0.1` + `::1`) |
-| `pg_hba.conf` | `host all all 127.0.0.1/32 trust`; `::1/128 scram-sha-256`; `local all all peer` |
-| Database existing | `juniper_manage`, `juniper_manage_test`, `mcnvpn`, `postgres` |
-| `max_connections` | 100 |
+| Image | `postgres:16-alpine` |
+| Container | `ingatin-postgres` |
+| Data | volume `pgdata` |
+| Port host | `127.0.0.1:${INGATIN_PG_PORT:-5432}` (hanya loopback) |
+| Kredensial | `INGATIN_DB_NAME` / `INGATIN_DB_USER` / `INGATIN_DB_PASSWORD` |
 
-Karena `listen_addresses=localhost`, container **di bridge network tidak bisa**
-menghubungi `172.17.0.1:5432`. Solusi yang dipakai: service `api`, `worker`, dan `waha`
-memakai **`network_mode: host`**, sehingga menghubungi `127.0.0.1:5432` langsung —
-**tanpa mengubah konfigurasi PostgreSQL host** (aman untuk `juniper_manage` dan `mcnvpn`
-yang sedang produksi).
-
-Service `web` (nginx) tetap di bridge network dan meneruskan `/api` ke `127.0.0.1:8081`.
+Role & database dibuat otomatis oleh image `postgres` dari variabel `POSTGRES_*`.
+**Tidak perlu** `scripts/provision-db.sh`.
 
 ```bash
-# Provision manual (idempoten)
-./scripts/provision-db.sh
+# Jalankan
+docker compose up -d
 
-# Verifikasi
-psql -h 127.0.0.1 -U ingatin -d ingatin -c '\dt'
+# Verifikasi dari host (port di-loopback)
+PGPASSWORD="$(grep INGATIN_DB_PASSWORD .env | cut -d= -f2-)" \
+  psql -h 127.0.0.1 -p "${INGATIN_PG_PORT:-5432}" -U ingatin -d ingatin -c '\dt'
+
+# Bila 5432 sudah dipakai PostgreSQL host, ubah di .env:
+#   INGATIN_PG_PORT=5433
 ```
 
-### 5.2 Mode B — PostgreSQL Container (untuk server baru)
+Keunggulan Mode B: portabel (tanpa ketergantungan PostgreSQL host), tidak
+menyentuh `postgresql.conf`/`pg_hba.conf` host, dan versi klien/server selalu
+cocok (backup/restore dijalankan di dalam container — lihat §10).
 
-`docker-compose.yml` sudah memuat blok `postgres` **dalam keadaan di-comment**.
-Untuk mengaktifkan:
+### 5.2 Mode A — Reuse PostgreSQL Host (alternatif)
 
-1. Buka `docker-compose.yml`, hapus komentar pada service `postgres` (dan volume `pgdata`).
-2. Pada service `api` dan `worker`:
-   - **Hapus** baris `network_mode: host`.
-   - Tambahkan `depends_on: postgres: {condition: service_healthy}`.
-   - Ubah port API menjadi pemetaan: `ports: ["127.0.0.1:8081:8081"]`.
-3. Pada `waha`: hapus `network_mode: host`, tambahkan `ports: ["127.0.0.1:8082:3000"]`,
-   dan ubah `INGATIN_WAHA_BASE_URL` / `WHATSAPP_API_URL` menjadi `http://waha:3000`.
-4. Ubah `.env`:
+Gunakan bila server sudah punya PostgreSQL host yang ingin dipakai ulang dan
+host tidak dapat diubah `listen_addresses`-nya.
+
+> Catatan: container di bridge network **tidak dapat** menjangkau PostgreSQL host
+> yang hanya listen di `127.0.0.1`. Mode A memerlukan `network_mode: host` pada
+> `api`/`worker`, yang berarti port API (`8081`) tidak lagi terisolasi dari host.
+> **Mode B lebih disarankan.**
+
+Langkah Mode A:
+
+1. Di `.env`:
    ```env
-   INGATIN_DB_URL=postgres://ingatin:<PASSWORD>@postgres:5432/ingatin?sslmode=disable
+   INGATIN_DB_URL=postgres://ingatin:<PASSWORD>@127.0.0.1:5432/ingatin?sslmode=disable
    ```
-5. Jalankan:
+2. Provision role & database di host (idempoten):
    ```bash
-   docker compose up -d --build
+   ./scripts/provision-db.sh
    ```
+3. Sesuaikan `docker-compose.yml` bila perlu (lihat riwayat commit Mode A), lalu
+   `docker compose up -d`.
 
 Skema dan migrasi **identik** di kedua mode — tidak ada perubahan kode.
 
@@ -216,7 +237,8 @@ Migrasi dijalankan oleh service `migrate` (binary yang sama, `-mode=migrate`) se
 docker compose run --rm migrate -mode=migrate   # idempotent, aman diulang
 
 # Riwayat (goose menyimpan di tabel goose_db_version)
-psql -h 127.0.0.1 -U ingatin -d ingatin -c 'SELECT * FROM goose_db_version ORDER BY id'
+docker compose exec postgres \
+  psql -U ingatin -d ingatin -c 'SELECT * FROM goose_db_version ORDER BY id'
 ```
 
 **Aturan:** migrasi yang sudah pernah dijalankan **tidak boleh diedit**. Tambah file baru
@@ -233,18 +255,21 @@ sudah berjalan tidak ada baris yang ditimpa/diduplikasi.
 
 ## 6. Docker Compose
 
-Satu image, satu file compose. Lima service:
+Satu image, satu file compose. Enam service (Mode B):
 
-| Service | Image | Network | Peran |
-|---|---|---|---|
-| `migrate` | `ingatin:local` | host | Run-once: `-mode=migrate`, lalu exit 0 |
-| `api` | `ingatin:local` | host | HTTP API `:8081` |
-| `worker` | `ingatin:local` | host | Cron jobs (fanout, sender, digest, retention, sla) |
-| `waha` | `devlikeapro/waha` | host | WhatsApp gateway `:8082` |
-| `web` | build `./frontend` | bridge | nginx SPA + proxy `/api` → `127.0.0.1:8081`, port `8091` |
+| Service | Image | Network | Port host | Peran |
+|---|---|---|---|---|
+| `postgres` | `postgres:16-alpine` | bridge | `127.0.0.1:5432` | Database |
+| `migrate` | `ingatin:local` | bridge | — | Run-once: `-mode=migrate`, lalu exit 0 |
+| `api` | `ingatin:local` | bridge | `127.0.0.1:8081` | HTTP API |
+| `worker` | `ingatin:local` | bridge | — | Cron jobs (fanout, sender, digest, retention, sla) |
+| `waha` | `devlikeapro/waha` | bridge | `127.0.0.1:8082` | WhatsApp gateway (internal `:3000`) |
+| `web` | build `./frontend` | bridge | `0.0.0.0:8091` | nginx SPA + proxy `/api` → `api:8081` |
 
 Volumes: `ingatin_data` (data aplikasi), `waha_sessions` (sesi WhatsApp),
-`pgdata` (hanya bila Mode B aktif).
+`pgdata` (data PostgreSQL).
+
+Hanya `web` yang bind ke `0.0.0.0`; seluruh port lain hanya loopback.
 
 Perintah umum:
 
@@ -438,7 +463,7 @@ Konfigurasi **tidak** disimpan di `.env` — semuanya diisi dari panel admin.
 Cek antrean:
 
 ```bash
-psql -h 127.0.0.1 -U ingatin -d ingatin -c \
+docker compose exec postgres psql -U ingatin -d ingatin -c \
   "SELECT status, count(*) FROM sheet_sync_queue GROUP BY status;"
 ```
 
@@ -451,13 +476,13 @@ psql -h 127.0.0.1 -U ingatin -d ingatin -c \
 docker compose ps
 
 # 2) Migrasi
-psql -h 127.0.0.1 -U ingatin -d ingatin -c 'SELECT count(*) FROM goose_db_version'
+docker compose exec postgres psql -U ingatin -d ingatin -c 'SELECT count(*) FROM goose_db_version'
 
 # 3) Tabel inti ada
-psql -h 127.0.0.1 -U ingatin -d ingatin -c '\dt' | grep -E 'work_items|notification_outbox|users'
+docker compose exec postgres psql -U ingatin -d ingatin -c '\dt' | grep -E 'work_items|notification_outbox|users'
 
 # 4) Seed lengkap
-psql -h 127.0.0.1 -U ingatin -d ingatin -c \
+docker compose exec postgres psql -U ingatin -d ingatin -c \
   'SELECT (SELECT count(*) FROM organizations) org,
           (SELECT count(*) FROM teams) teams,
           (SELECT count(*) FROM workflow_definitions) workflows,
@@ -489,8 +514,10 @@ curl -s http://127.0.0.1:8091/api/health
 ./scripts/backup.sh
 ```
 
-Menghasilkan `backups/ingatin-db-YYYYMMDD-HHMMSS.sql.gz` + `.sha256`,
-retensi default 14 hari (dapat diubah via `KEEP_DAYS`).
+Pada Mode B, `pg_dump` dijalankan **di dalam container PostgreSQL** (versi klien
+& server selalu cocok; `postgresql-client` host tidak diperlukan). Menghasilkan
+`backups/ingatin-db-YYYYMMDD-HHMMSS.sql.gz` + `.sha256`, retensi default 14 hari
+(dapat diubah via `KEEP_DAYS`).
 
 Jadwalkan harian 02:00 WIB di host:
 
@@ -505,7 +532,8 @@ Jadwalkan harian 02:00 WIB di host:
 ```
 
 Script memverifikasi checksum, membuat backup pengaman sebelum menimpa,
-lalu restore. **Hentikan `api` dan `worker` lebih dulu:**
+mengosongkan schema `public`, lalu restore. **Hentikan `api` dan `worker`
+lebih dulu:**
 
 ```bash
 docker compose stop api worker
@@ -545,15 +573,16 @@ docker compose build && docker compose up -d
 | Gejala | Kemungkinan penyebab | Tindakan |
 |---|---|---|
 | `api` restart terus, log `config: invalid` | `INGATIN_CREDENTIAL_KEY` bukan 32 byte | Perbaiki `.env`; panjang tepat 32 |
-| `connection refused` ke `127.0.0.1:5432` dari `api` | `network_mode: host` hilang | Pastikan `api`/`worker` memakai host network (Mode A) |
-| `password authentication failed for user "ingatin"` | Role belum dibuat / password beda | Jalankan `./scripts/provision-db.sh`; sinkronkan `INGATIN_DB_URL` |
-| `migrate` gagal `permission denied for schema public` | Role bukan pemilik DB | `sudo -u postgres psql -c 'ALTER DATABASE ingatin OWNER TO ingatin'` |
+| `api` gagal konek `postgres:5432` | container `postgres` belum sehat / `INGATIN_DB_URL` host salah | `docker compose ps`; host harus `postgres` (Mode B) atau `127.0.0.1` (Mode A) |
+| Port `5432`/`8081`/`8082` bentrok | service lain memakai port sama | Ubah `INGATIN_PG_PORT`/`INGATIN_API_PORT`/`INGATIN_WAHA_PORT` di `.env`, lalu `docker compose up -d` |
+| `password authentication failed for user "ingatin"` | `INGATIN_DB_PASSWORD` beda dengan volume `pgdata` lama | Samakan `.env` dengan password awal, atau hapus volume `pgdata` (destruktif) |
+| `migrate` gagal `permission denied for schema public` | role bukan pemilik DB (Mode A) | `sudo -u postgres psql -c 'ALTER DATABASE ingatin OWNER TO ingatin'` |
 | Web `502 Bad Gateway` | `api` belum sehat | `docker compose logs api`; cek `docker compose ps` |
-| Web terbuka tapi `/api` 404 | proxy nginx salah | Cek `frontend/nginx/default.conf` mengarah ke `127.0.0.1:8081` |
+| Web terbuka tapi `/api` 404 | upstream nginx salah | Pastikan `INGATIN_API_UPSTREAM=http://api:8081` (Mode B) |
 | WAHA `SCAN_QR_CODE` terus | belum scan / sesi kedaluwarsa | Scan ulang di `:8010` |
 | WAHA `FAILED` | versi WhatsApp Web tak cocok | `docker compose restart waha`; bila tetap, ganti tag image |
 | Notifikasi tidak terkirim | outbox `failed` | Cek Audit → Outbox, baca `last_error`; verifikasi provider & binding |
-| Backup gagal `pg_dump: command not found` | image runtime tanpa client | Pastikan Dockerfile runtime `apk add postgresql-client gzip` |
+| Backup gagal `pg_dump: server version mismatch` | memakai pg_dump host yang lebih lama | Jalankan `./scripts/backup.sh` (otomatis memakai container di Mode B) |
 
 Kumpulkan diagnosa:
 

@@ -372,9 +372,12 @@ Dry-run yang aman:
 # Hapus termasuk volume (DESTRUKTIF — semua data hilang)
 ./uninstall.sh --purge
 
-# Hapus juga role & database di PostgreSQL host (DESTRUKTIF)
+# Hapus juga role & database di PostgreSQL HOST (DESTRUKTIF; hanya Mode A)
 ./uninstall.sh --purge --drop-db
 ```
+
+> Pada Mode B (default), database ada di volume `pgdata` sehingga `--purge`
+> sudah menghapusnya. `--drop-db` hanya relevan untuk PostgreSQL host (Mode A).
 
 Selalu jalankan `./scripts/backup.sh` sebelum uninstall.
 

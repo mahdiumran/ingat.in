@@ -34,10 +34,40 @@ DB_URL="${INGATIN_DB_URL:-}"
 
 KEEP_DAYS="${KEEP_DAYS:-${INGATIN_BACKUP_KEEP_DAYS:-14}}"
 
-command -v pg_dump >/dev/null 2>&1 || fail "pg_dump tidak ditemukan. Install postgresql-client."
 command -v gzip >/dev/null 2>&1 || fail "gzip tidak ditemukan."
 
 mkdir -p "$BACKUP_DIR"
+
+# ---------------------------------------------------------------------------
+# Tentukan mode koneksi.
+#
+# Mode B (default): PostgreSQL adalah container `ingatin-postgres`. pg_dump
+#   dijalankan DI DALAM container sehingga versi klien selalu cocok dengan
+#   server (menghindari "server version mismatch" ketika postgresql-client host
+#   lebih lama). pg_dump 16 di dalam image postgres:16 sudah tersedia.
+# Mode A (lama): PostgreSQL host. pg_dump dijalankan di host dengan host:port
+#   di-remap ke loopback.
+# ---------------------------------------------------------------------------
+MODE_B=0
+PG_CONTAINER="${INGATIN_PG_CONTAINER:-}"
+if [[ -n "$PG_CONTAINER" ]]; then
+  MODE_B=1
+elif [[ "$DB_URL" == *"@postgres:5432/"* ]]; then
+  # Cari container postgres milik proyek ini.
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'ingatin-postgres'; then
+    PG_CONTAINER="ingatin-postgres"
+    MODE_B=1
+  else
+    # Nama container dapat berbeda bila COMPOSE_PROJECT_NAME diubah.
+    PG_CONTAINER="$(docker ps --filter 'label=com.docker.compose.service=postgres' \
+      --format '{{.Names}}' 2>/dev/null | head -1)"
+    if [[ -n "$PG_CONTAINER" ]]; then
+      MODE_B=1
+    else
+      fail "container PostgreSQL tidak ditemukan. Jalankan 'docker compose up -d postgres' terlebih dahulu, atau set INGATIN_PG_CONTAINER."
+    fi
+  fi
+fi
 
 # Pisahkan kredensial dari URL agar password tidak muncul di daftar proses.
 # Format: postgres://user:pass@host:port/db?params
@@ -50,6 +80,18 @@ else
   # Tanpa password di URL.
   SANITIZED_URL="$DB_URL"
   DB_PASS=""
+fi
+
+# Nama database untuk pg_dump di dalam container.
+DB_NAME_FROM_URL="${DB_REST%%\?*}"
+DB_NAME_FROM_URL="${DB_NAME_FROM_URL##*/}"
+DB_NAME_FROM_URL="${DB_NAME_FROM_URL:-${INGATIN_DB_NAME:-ingatin}}"
+
+if [[ "$MODE_B" == "0" ]]; then
+  # Mode A: pg_dump dari host. Remap host:port ke loopback.
+  DB_URL="${DB_URL/@postgres:5432\//@127.0.0.1:${INGATIN_PG_PORT:-5432}\/}"
+  SANITIZED_URL="${SANITIZED_URL/@postgres:5432\//@127.0.0.1:${INGATIN_PG_PORT:-5432}\/}"
+  command -v pg_dump >/dev/null 2>&1 || fail "pg_dump tidak ditemukan. Install postgresql-client atau gunakan Mode B."
 fi
 
 STAMP="$(date -u '+%Y%m%d-%H%M%S')"
@@ -69,7 +111,13 @@ trap cleanup EXIT
 
 # Pipe pg_dump -> gzip. Password dikirim lewat PGPASSWORD agar tidak terlihat
 # di daftar proses.
-if [[ -n "$DB_PASS" ]]; then
+if [[ "$MODE_B" == "1" ]]; then
+  # Mode B: jalankan pg_dump di dalam container PostgreSQL (versi klien cocok).
+  log "menggunakan container PostgreSQL: $PG_CONTAINER"
+  docker exec -e PGPASSWORD="$DB_PASS" "$PG_CONTAINER" \
+    pg_dump --no-owner --no-acl -U "$DB_USER" -d "$DB_NAME_FROM_URL" \
+    | gzip -9 > "$TMP_PATH"
+elif [[ -n "$DB_PASS" ]]; then
   PGPASSWORD="$DB_PASS" pg_dump --no-owner --no-acl "$SANITIZED_URL" | gzip -9 > "$TMP_PATH"
 else
   pg_dump --no-owner --no-acl "$SANITIZED_URL" | gzip -9 > "$TMP_PATH"
