@@ -59,13 +59,17 @@ for ident in "$DB_NAME" "$DB_USER"; do
   [[ "$ident" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || fail "nama identifier tidak valid: $ident"
 done
 
-# Cek akses superuser (peer auth lewat sudo -u postgres).
-if ! sudo -n -u "$PG_SUPERUSER" psql -tAc 'SELECT 1' >/dev/null 2>&1; then
-  if sudo -u "$PG_SUPERUSER" psql -tAc 'SELECT 1' >/dev/null 2>&1; then
-    :
-  else
-    fail "tidak dapat terhubung sebagai superuser '$PG_SUPERUSER' (butuh sudo)."
-  fi
+if [[ "$EUID" -eq 0 ]]; then
+  command -v runuser >/dev/null 2>&1 || fail "runuser tidak ditemukan. Install util-linux."
+  PSQL=(runuser -u "$PG_SUPERUSER" -- psql)
+elif command -v sudo >/dev/null 2>&1; then
+  PSQL=(sudo -u "$PG_SUPERUSER" psql)
+else
+  fail "sudo tidak ditemukan; jalankan installer sebagai root."
+fi
+
+if ! "${PSQL[@]}" -tAc 'SELECT 1' >/dev/null 2>&1; then
+  fail "tidak dapat terhubung sebagai superuser PostgreSQL '$PG_SUPERUSER'."
 fi
 
 log "PostgreSQL terdeteksi; menyiapkan role '$DB_USER' dan database '$DB_NAME'"
@@ -73,31 +77,31 @@ log "PostgreSQL terdeteksi; menyiapkan role '$DB_USER' dan database '$DB_NAME'"
 # ---------------------------------------------------------------------------
 # Role
 # ---------------------------------------------------------------------------
-ROLE_EXISTS="$(sudo -u "$PG_SUPERUSER" psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'")"
+ROLE_EXISTS="$("${PSQL[@]}" -tAc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'")"
 if [[ "$ROLE_EXISTS" == "1" ]]; then
   log "role '$DB_USER' sudah ada — menyinkronkan password"
-  sudo -u "$PG_SUPERUSER" psql -q -c "ALTER ROLE \"$DB_USER\" WITH LOGIN PASSWORD '$DB_PASS'"
+  "${PSQL[@]}" -q -c "ALTER ROLE \"$DB_USER\" WITH LOGIN PASSWORD '$DB_PASS'"
 else
   log "membuat role '$DB_USER'"
-  sudo -u "$PG_SUPERUSER" psql -q -c "CREATE ROLE \"$DB_USER\" WITH LOGIN PASSWORD '$DB_PASS'"
+  "${PSQL[@]}" -q -c "CREATE ROLE \"$DB_USER\" WITH LOGIN PASSWORD '$DB_PASS'"
 fi
 
 # ---------------------------------------------------------------------------
 # Database
 # ---------------------------------------------------------------------------
-DB_EXISTS="$(sudo -u "$PG_SUPERUSER" psql -tAc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'")"
+DB_EXISTS="$("${PSQL[@]}" -tAc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'")"
 if [[ "$DB_EXISTS" == "1" ]]; then
   log "database '$DB_NAME' sudah ada"
 else
   log "membuat database '$DB_NAME' (owner: $DB_USER)"
-  sudo -u "$PG_SUPERUSER" psql -q -c "CREATE DATABASE \"$DB_NAME\" OWNER \"$DB_USER\" ENCODING 'UTF8'"
+  "${PSQL[@]}" -q -c "CREATE DATABASE \"$DB_NAME\" OWNER \"$DB_USER\" ENCODING 'UTF8'"
 fi
 
 # Pastikan owner benar (idempoten).
-sudo -u "$PG_SUPERUSER" psql -q -c "ALTER DATABASE \"$DB_NAME\" OWNER TO \"$DB_USER\"" >/dev/null
+"${PSQL[@]}" -q -c "ALTER DATABASE \"$DB_NAME\" OWNER TO \"$DB_USER\"" >/dev/null
 
 # Beri hak pada schema public (PG 15 mencabut CREATE dari public secara default).
-sudo -u "$PG_SUPERUSER" psql -q -d "$DB_NAME" -c "GRANT ALL ON SCHEMA public TO \"$DB_USER\"" >/dev/null
+"${PSQL[@]}" -q -d "$DB_NAME" -c "GRANT ALL ON SCHEMA public TO \"$DB_USER\"" >/dev/null
 
 # ---------------------------------------------------------------------------
 # Verifikasi koneksi sebagai user aplikasi
@@ -111,7 +115,7 @@ if PGPASSWORD="$DB_PASS" psql -h "$PG_HOST" -p "$PG_PORT" -U "$DB_USER" -d "$DB_
   log "koneksi TCP OK: $DB_USER@$PG_HOST:$PG_PORT/$DB_NAME"
 else
   log "koneksi TCP gagal; mencoba lewat socket unix (peer/local)"
-  if sudo -u "$PG_SUPERUSER" psql -d "$DB_NAME" -tAc 'SELECT 1' >/dev/null 2>&1; then
+  if "${PSQL[@]}" -d "$DB_NAME" -tAc 'SELECT 1' >/dev/null 2>&1; then
     log "database dapat diakses via socket; periksa pg_hba bila container gagal konek"
   else
     fail "database tidak dapat diakses"

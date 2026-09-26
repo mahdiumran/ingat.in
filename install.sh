@@ -89,12 +89,12 @@ INGATIN_TRUSTED_PROXIES=
 INGATIN_SECRET_KEY=${SECRET_KEY}
 INGATIN_CREDENTIAL_KEY=${CREDENTIAL_KEY}
 
-# --- Database (Mode A: PostgreSQL host) ---
-INGATIN_DB_URL=postgres://ingatin:${DB_PASSWORD}@127.0.0.1:5432/ingatin?sslmode=disable
+# --- Database (Mode B: PostgreSQL container) ---
+INGATIN_DB_URL=postgres://ingatin:${DB_PASSWORD}@postgres:5432/ingatin?sslmode=disable
 INGATIN_DB_NAME=ingatin
 INGATIN_DB_USER=ingatin
 INGATIN_DB_PASSWORD=${DB_PASSWORD}
-INGATIN_PG_HOST=127.0.0.1
+INGATIN_PG_HOST=postgres
 INGATIN_PG_PORT=5432
 INGATIN_PG_SUPERUSER=postgres
 
@@ -109,7 +109,7 @@ INGATIN_ADMIN_EMAIL=
 INGATIN_ADMIN_PASSWORD=${ADMIN_PASSWORD}
 
 # --- WAHA (WhatsApp) ---
-INGATIN_WAHA_BASE_URL=http://127.0.0.1:8082
+INGATIN_WAHA_BASE_URL=http://waha:3000
 INGATIN_WAHA_API_KEY=${WAHA_API_KEY}
 WAHA_ENGINE=WEBJS
 WAHA_API_KEY=${WAHA_API_KEY}
@@ -135,13 +135,21 @@ EOF
 fi
 
 # ---------------------------------------------------------------------------
-# 3. Database
+# 3. Database (Mode B: PostgreSQL container)
+#
+# Role & database dibuat otomatis oleh image postgres dari variabel POSTGRES_*
+# di docker-compose.yml, jadi scripts/provision-db.sh (khusus Mode A / host)
+# tidak dijalankan. Provisioning host hanya bila INSTALL_PG_MODE=host.
 # ---------------------------------------------------------------------------
-log "menyiapkan database PostgreSQL"
-if [[ -x ./scripts/provision-db.sh ]]; then
-  ./scripts/provision-db.sh
+if [[ "${INSTALL_PG_MODE:-container}" == "host" ]]; then
+  log "menyiapkan database PostgreSQL pada host"
+  if [[ -x ./scripts/provision-db.sh ]]; then
+    ./scripts/provision-db.sh
+  else
+    warn "scripts/provision-db.sh tidak ditemukan — lewati provisioning database"
+  fi
 else
-  warn "scripts/provision-db.sh tidak ditemukan — lewati provisioning database"
+  log "database PostgreSQL akan dibuat oleh container 'postgres'"
 fi
 
 # ---------------------------------------------------------------------------
