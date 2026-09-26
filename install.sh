@@ -15,6 +15,9 @@
 # Opsi:
 #   --no-build     lewati `docker compose build` (pakai image yang ada)
 #   --no-qr-site   jangan sentuh konfigurasi nginx host
+#   --reset-db     hapus volume pgdata lalu buat ulang database dari .env
+#                  (DESTRUKTIF untuk data PostgreSQL container; pakai bila
+#                  muncul error 'password authentication failed' 28P01)
 #   -h | --help    tampilkan bantuan ini
 
 set -euo pipefail
@@ -26,11 +29,13 @@ VERSION="$(cat VERSION 2>/dev/null || echo dev)"
 
 NO_BUILD=0
 NO_QR_SITE=0
+RESET_DB=0
 for arg in "$@"; do
   case "$arg" in
     --no-build)  NO_BUILD=1 ;;
     --no-qr-site) NO_QR_SITE=1 ;;
-    -h|--help)   sed -n '2,20p' "$0"; exit 0 ;;
+    --reset-db)  RESET_DB=1 ;;
+    -h|--help)   sed -n '2,22p' "$0"; exit 0 ;;
     *) printf 'Argumen tidak dikenal: %s\n' "$arg" >&2; exit 1 ;;
   esac
 done
@@ -237,6 +242,35 @@ EOF
   chmod 600 .env
   ENV_CREATED=1
   log ".env dibuat (mode 600)"
+fi
+
+# ---------------------------------------------------------------------------
+# 2b. Deteksi volume PostgreSQL yang tidak sinkron (penyebab umum 28P01)
+#
+# POSTGRES_PASSWORD hanya diterapkan saat volume pgdata PERTAMA kali dibuat.
+# Bila pgdata sudah ada dari percobaan sebelumnya dengan password berbeda,
+# migrate akan gagal: 'password authentication failed for user "ingatin"'.
+# Kita deteksi volume itu dan (a) tawarkan reset, atau (b) tandai --reset-db.
+# ---------------------------------------------------------------------------
+PROJECT_NAME="$($DC config --format json 2>/dev/null \
+  | grep -oE '"name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
+  | sed -E 's/.*"([^"]*)"$/\1/')"
+PROJECT_NAME="${PROJECT_NAME:-$(basename "$SCRIPT_DIR")}"
+PG_VOLUME="${PROJECT_NAME}_pgdata"
+
+if docker volume inspect "$PG_VOLUME" >/dev/null 2>&1; then
+  if [[ "$RESET_DB" == "1" ]]; then
+    warn "--reset-db: menghapus volume PostgreSQL '$PG_VOLUME' (data DB container hilang)"
+    $DC down --remove-orphans >/dev/null 2>&1 || true
+    docker volume rm "$PG_VOLUME" >/dev/null 2>&1 || warn "gagal menghapus volume $PG_VOLUME"
+    log "volume '$PG_VOLUME' dihapus; database akan dibuat ulang dari .env"
+  else
+    warn "volume PostgreSQL '$PG_VOLUME' sudah ada."
+    warn "Jika muncul error 'password authentication failed' (28P01), volume ini"
+    warn "kemungkinan dibuat dengan password lama. Perbaikannya:"
+    warn "    docker compose down && docker volume rm $PG_VOLUME && ./install.sh"
+    warn "atau jalankan ulang:  ./install.sh --reset-db"
+  fi
 fi
 
 # ---------------------------------------------------------------------------

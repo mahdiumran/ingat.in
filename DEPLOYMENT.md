@@ -227,7 +227,36 @@ Langkah Mode A:
 
 Skema dan migrasi **identik** di kedua mode — tidak ada perubahan kode.
 
-### 5.3 Migrasi
+### 5.4 Reset password / volume PostgreSQL (error `28P01`)
+
+Gejala: `migrate` gagal dengan
+`FATAL: password authentication failed for user "ingatin" (SQLSTATE 28P01)`.
+
+Penyebab: `POSTGRES_PASSWORD` hanya diterapkan saat volume `pgdata` **pertama
+kali dibuat**. Bila volume sudah ada dari percobaan sebelumnya (mis. `.env`
+pernah dihapus/di-generate ulang sehingga password berubah), Postgres memakai
+password LAMA di dalam volume, bukan yang di `.env`.
+
+Perbaikan (mengembalikan DB container ke password di `.env`):
+
+```bash
+# Cara termudah — installer mendeteksi volume lama dan membuat ulang:
+./install.sh --reset-db
+
+# Atau manual:
+docker compose down
+docker volume rm "$(basename "$PWD")_pgdata"   # nama volume = <project>_pgdata
+docker compose up -d
+```
+
+> ⚠️ `--reset-db` **menghapus seluruh data PostgreSQL container**. Bila data
+> perlu dipertahankan, backup dulu (`./scripts/backup.sh`) sebelum reset dan
+> restore setelahnya.
+
+`install.sh` mencetak peringatan otomatis bila menemukan volume `pgdata` yang
+sudah ada, sehingga kejadian ini mudah dikenali.
+
+### 5.5 Migrasi
 
 Migrasi dijalankan oleh service `migrate` (binary yang sama, `-mode=migrate`) sebelum
 `api`/`worker` start (`depends_on: service_completed_successfully`).
@@ -575,7 +604,7 @@ docker compose build && docker compose up -d
 | `api` restart terus, log `config: invalid` | `INGATIN_CREDENTIAL_KEY` bukan 32 byte | Perbaiki `.env`; panjang tepat 32 |
 | `api` gagal konek `postgres:5432` | container `postgres` belum sehat / `INGATIN_DB_URL` host salah | `docker compose ps`; host harus `postgres` (Mode B) atau `127.0.0.1` (Mode A) |
 | Port `5432`/`8081`/`8082` bentrok | service lain memakai port sama | Ubah `INGATIN_PG_PORT`/`INGATIN_API_PORT`/`INGATIN_WAHA_PORT` di `.env`, lalu `docker compose up -d` |
-| `password authentication failed for user "ingatin"` | `INGATIN_DB_PASSWORD` beda dengan volume `pgdata` lama | Samakan `.env` dengan password awal, atau hapus volume `pgdata` (destruktif) |
+| `password authentication failed for user "ingatin"` (SQLSTATE `28P01`) | `pgdata` lama dibuat dengan password berbeda; `POSTGRES_PASSWORD` hanya berlaku saat volume pertama kali dibuat | Jalankan `./install.sh --reset-db` (menghapus volume `pgdata` lalu membuat ulang DB dari `.env`). **Destruktif** untuk data container. |
 | `migrate` gagal `permission denied for schema public` | role bukan pemilik DB (Mode A) | `sudo -u postgres psql -c 'ALTER DATABASE ingatin OWNER TO ingatin'` |
 | Web `502 Bad Gateway` | `api` belum sehat | `docker compose logs api`; cek `docker compose ps` |
 | Web terbuka tapi `/api` 404 | upstream nginx salah | Pastikan `INGATIN_API_UPSTREAM=http://api:8081` (Mode B) |
