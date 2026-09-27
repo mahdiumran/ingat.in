@@ -58,6 +58,7 @@ export default function Notes({ user, toast }: { user: ApiUser | null; toast: To
   const teamName = (id?: string) => teams.data?.teams.find((t) => t.id === id)?.name
 
   const [editing, setEditing] = useState<Note | 'new' | null>(null)
+  const [viewing, setViewing] = useState<Note | null>(null)
   const [shareTarget, setShareTarget] = useState<Note | null>(null)
   const [confirm, setConfirm] = useState<ConfirmState | null>(null)
   const [confirmBusy, setConfirmBusy] = useState(false)
@@ -174,7 +175,17 @@ export default function Notes({ user, toast }: { user: ApiUser | null; toast: To
       {pinned.length > 0 && (
         <>
           <div className="kicker mb-2">Disematkan</div>
-          <NoteGrid notes={pinned} teamName={teamName} canWrite={canWrite} canEdit={canEdit} onPin={togglePin} onEdit={setEditing} onDelete={requestDelete} onShare={setShareTarget} />
+          <NoteGrid
+            notes={pinned}
+            teamName={teamName}
+            canWrite={canWrite}
+            canEdit={canEdit}
+            onView={setViewing}
+            onPin={togglePin}
+            onEdit={setEditing}
+            onDelete={requestDelete}
+            onShare={setShareTarget}
+          />
           <div className="mb-5" />
         </>
       )}
@@ -182,8 +193,31 @@ export default function Notes({ user, toast }: { user: ApiUser | null; toast: To
       {others.length > 0 && (
         <>
           {pinned.length > 0 && <div className="kicker mb-2">Lainnya</div>}
-          <NoteGrid notes={others} teamName={teamName} canWrite={canWrite} canEdit={canEdit} onPin={togglePin} onEdit={setEditing} onDelete={requestDelete} onShare={setShareTarget} />
+          <NoteGrid
+            notes={others}
+            teamName={teamName}
+            canWrite={canWrite}
+            canEdit={canEdit}
+            onView={setViewing}
+            onPin={togglePin}
+            onEdit={setEditing}
+            onDelete={requestDelete}
+            onShare={setShareTarget}
+          />
         </>
+      )}
+
+      {viewing && (
+        <NoteDetail
+          note={viewing}
+          ownerTeamName={teamName(viewing.owner_team_id)}
+          editable={canEdit(viewing)}
+          onClose={() => setViewing(null)}
+          onEdit={() => {
+            setViewing(null)
+            setEditing(viewing)
+          }}
+        />
       )}
 
       {editing && (
@@ -249,6 +283,7 @@ function NoteGrid({
   teamName,
   canWrite,
   canEdit,
+  onView,
   onPin,
   onEdit,
   onDelete,
@@ -258,6 +293,7 @@ function NoteGrid({
   teamName: (id?: string) => string | undefined
   canWrite: boolean
   canEdit: (n: Note) => boolean
+  onView: (n: Note) => void
   onPin: (n: Note) => void
   onEdit: (n: Note) => void
   onDelete: (n: Note) => void
@@ -271,58 +307,74 @@ function NoteGrid({
         return (
           <article
             key={n.id}
-            className={`flex flex-col rounded-control border p-3.5 shadow-sm ${colorCard(n.color)}`}
+            className={`relative flex flex-col rounded-control border p-3.5 shadow-sm transition-shadow hover:shadow-raised ${colorCard(n.color)}`}
           >
-            <div className="flex items-start justify-between gap-2">
-              <h3 className="font-headline text-body-md font-semibold">{n.title || '(tanpa judul)'}</h3>
-              {canWrite && (
-                <button
-                  className="shrink-0 text-text-secondary hover:text-primary"
-                  title={n.pinned ? 'Lepas sematan' : 'Sematkan'}
-                  onClick={() => onPin(n)}
-                >
-                  <span className="material-symbols-outlined text-[18px]">
-                    {n.pinned ? 'push_pin' : 'keep'}
-                  </span>
-                </button>
-              )}
-            </div>
-
-            {n.body && (
-              <p className="mt-1.5 line-clamp-6 whitespace-pre-wrap text-body-sm text-text-primary">{n.body}</p>
+            {canWrite && (
+              <button
+                type="button"
+                className="absolute right-3.5 top-3.5 z-10 text-text-secondary hover:text-primary"
+                title={n.pinned ? 'Lepas sematan' : 'Sematkan'}
+                onClick={() => onPin(n)}
+              >
+                <span className="material-symbols-outlined text-[18px]">
+                  {n.pinned ? 'push_pin' : 'keep'}
+                </span>
+              </button>
             )}
 
-            <div className="mt-2 flex flex-wrap items-center gap-1.5">
-              <span
-                className={`rounded-full border px-1.5 py-0.5 text-[10px] font-bold uppercase ${
-                  n.visibility === 'eksternal'
-                    ? 'border-info-container bg-info-container text-on-info-container'
-                    : 'border-outline-variant bg-surface-container text-text-secondary'
-                }`}
-              >
-                {n.visibility}
-              </span>
-              {n.owner_team_id && (
-                <span className="rounded-full bg-surface-container px-1.5 py-0.5 text-[10px] font-semibold text-text-secondary">
-                  {teamName(n.owner_team_id) ?? 'Tim'}
-                </span>
-              )}
-              {shared.length > 0 && (
-                <span
-                  className="inline-flex items-center gap-0.5 rounded-full bg-surface-container px-1.5 py-0.5 text-[10px] font-semibold text-text-secondary"
-                  title={`Dibagikan ke: ${shared.map((s) => s.name).join(', ')}`}
-                >
-                  <span className="material-symbols-outlined text-[12px]">group</span>
-                  {shared.length}
-                </span>
-              )}
-            </div>
+            <button
+              type="button"
+              className="block w-full flex-1 cursor-pointer text-left outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+              aria-label={`Buka catatan ${n.title || '(tanpa judul)'}`}
+              onClick={() => onView(n)}
+            >
+              <h3 className={`font-headline text-body-md font-semibold ${canWrite ? 'pr-8' : ''}`}>
+                {n.title || '(tanpa judul)'}
+              </h3>
 
-            <div className="mt-auto flex items-center justify-between gap-1 border-t border-black/5 pt-2">
+              {n.body ? (
+                <p className="mt-1.5 line-clamp-6 whitespace-pre-wrap break-words text-body-sm text-text-primary">
+                  {n.body}
+                </p>
+              ) : (
+                <p className="mt-1.5 text-body-sm italic text-text-secondary">Tidak ada isi catatan.</p>
+              )}
+
+              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                <span
+                  className={`rounded-full border px-1.5 py-0.5 text-[10px] font-bold uppercase ${
+                    n.visibility === 'eksternal'
+                      ? 'border-info-container bg-info-container text-on-info-container'
+                      : 'border-outline-variant bg-surface-container text-text-secondary'
+                  }`}
+                >
+                  {n.visibility}
+                </span>
+                {n.owner_team_id && (
+                  <span className="rounded-full bg-surface-container px-1.5 py-0.5 text-[10px] font-semibold text-text-secondary">
+                    {teamName(n.owner_team_id) ?? 'Tim'}
+                  </span>
+                )}
+                {shared.length > 0 && (
+                  <span
+                    className="inline-flex items-center gap-0.5 rounded-full bg-surface-container px-1.5 py-0.5 text-[10px] font-semibold text-text-secondary"
+                    title={`Dibagikan ke: ${shared.map((s) => s.name).join(', ')}`}
+                  >
+                    <span className="material-symbols-outlined text-[12px]">group</span>
+                    {shared.length}
+                  </span>
+                )}
+              </div>
+            </button>
+
+            <div className="mt-2 flex items-center justify-between gap-1 border-t border-black/5 pt-2">
               <span className="mono text-label-sm text-text-secondary">
                 {n.updated_by_username || n.created_by} · {formatWIB(n.updated_at, true)}
               </span>
               <div className="flex items-center gap-0.5">
+                <button className="btn-ghost h-7 w-7 px-0" title="Lihat isi lengkap" onClick={() => onView(n)}>
+                  <span className="material-symbols-outlined text-[17px]">visibility</span>
+                </button>
                 {canWrite && (
                   <button className="btn-ghost h-7 w-7 px-0" title="Bagikan ke tim" onClick={() => onShare(n)}>
                     <span className="material-symbols-outlined text-[17px]">share</span>
@@ -344,6 +396,105 @@ function NoteGrid({
         )
       })}
     </div>
+  )
+}
+
+function NoteDetail({
+  note,
+  ownerTeamName,
+  editable,
+  onClose,
+  onEdit,
+}: {
+  note: Note
+  ownerTeamName?: string
+  editable: boolean
+  onClose: () => void
+  onEdit: () => void
+}) {
+  const sharedTeams = note.shared_teams ?? []
+  const color = NOTE_COLORS.find((item) => item.code === note.color)
+
+  return (
+    <Modal
+      title="Isi Catatan"
+      width="lg"
+      onClose={onClose}
+      footer={
+        <>
+          {editable && (
+            <button className="btn-secondary" onClick={onEdit}>
+              <span className="material-symbols-outlined text-[17px]">edit</span>
+              Ubah
+            </button>
+          )}
+          <button className="btn-primary" onClick={onClose}>
+            Tutup
+          </button>
+        </>
+      }
+    >
+      <div className={`rounded-control border p-4 sm:p-5 ${colorCard(note.color)}`}>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <h3 className="min-w-0 flex-1 break-words font-headline text-headline-sm font-semibold">
+            {note.title || '(tanpa judul)'}
+          </h3>
+          <div className="flex shrink-0 flex-wrap gap-1.5">
+            <span className="rounded-full border border-outline-variant bg-surface-container px-2 py-1 text-[10px] font-bold uppercase text-text-secondary">
+              {note.visibility}
+            </span>
+            {note.pinned && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-outline-variant bg-surface-container px-2 py-1 text-[10px] font-bold text-text-secondary">
+                <span className="material-symbols-outlined text-[13px]">push_pin</span>
+                Disematkan
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className="mt-4 max-h-[min(55vh,560px)] overflow-y-auto rounded-control border border-black/5 bg-white/50 px-4 py-3 dark:bg-black/10">
+          {note.body ? (
+            <p className="whitespace-pre-wrap break-words text-body-md leading-relaxed text-text-primary">{note.body}</p>
+          ) : (
+            <p className="text-body-sm italic text-text-secondary">Tidak ada isi catatan.</p>
+          )}
+        </div>
+      </div>
+
+      <dl className="mt-4 grid gap-x-6 gap-y-3 text-body-sm sm:grid-cols-2">
+        <div>
+          <dt className="text-label-sm text-text-secondary">Tim pemilik</dt>
+          <dd className="mt-0.5 font-medium">{ownerTeamName ?? (note.owner_team_id ? 'Tim' : 'Tanpa tim')}</dd>
+        </div>
+        <div>
+          <dt className="text-label-sm text-text-secondary">Warna</dt>
+          <dd className="mt-0.5 inline-flex items-center gap-2 font-medium">
+            {color && <span className={`h-3 w-3 rounded-full ${color.swatch}`} />}
+            {color?.label ?? note.color}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-label-sm text-text-secondary">Dibuat oleh</dt>
+          <dd className="mt-0.5 font-medium">{note.created_by || '—'}</dd>
+        </div>
+        <div>
+          <dt className="text-label-sm text-text-secondary">Diperbarui</dt>
+          <dd className="mt-0.5 font-medium">{note.updated_by_username || note.created_by || '—'} · {formatWIB(note.updated_at, true)}</dd>
+        </div>
+        {sharedTeams.length > 0 && (
+          <div className="sm:col-span-2">
+            <dt className="text-label-sm text-text-secondary">Dibagikan ke tim</dt>
+            <dd className="mt-1 flex flex-wrap gap-1.5">
+              {sharedTeams.map((team) => (
+                <span key={team.team_id} className="rounded-full bg-surface-container px-2 py-1 text-label-sm font-medium">
+                  {team.name}
+                </span>
+              ))}
+            </dd>
+          </div>
+        )}
+      </dl>
+    </Modal>
   )
 }
 
