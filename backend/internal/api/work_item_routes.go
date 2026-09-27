@@ -347,12 +347,10 @@ func (s *Server) handleCreateWorkItem(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "team_id tidak valid")
 		return
 	}
-	// F31: task & daily_task dipartisi per tim. Non-admin selalu memakai tim
-	// pengguna (input team_id diabaikan); admin boleh memilih tim mana pun.
+	// F31: task & daily_task dipartisi per tim (lihat resolveTeamForCreate).
 	if isTeamScopedType(req.ItemType) {
-		if u := userFrom(r); u != nil && !s.isSuper(r, u) {
-			teamID = u.TeamID
-		}
+		u := userFrom(r)
+		teamID = resolveTeamForCreate(teamID, u, s.isSuper(r, u))
 	}
 	targetID, err := parseOptionalUUID(req.TargetID)
 	if err != nil {

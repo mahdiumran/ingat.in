@@ -413,14 +413,16 @@ mengelola pekerjaannya sendiri.
 
 | Aturan | Detail |
 |---|---|
-| Admin/super | Lihat & kelola **semua** tim |
+| Admin/super | Lihat & kelola **semua** tim; saat membuat task/daily_task **tanpa memilih tim**, otomatis memakai tim admin sendiri (bukan kosong) |
 | Non-admin bertim | Hanya item `team_id` = tim pengguna (list, get, tulis) |
 | Non-admin tanpa tim | Hanya item miliknya sendiri (`created_by`/`owner`) |
-| Item legacy tanpa tim | Hanya admin (data lama tidak di-backfill) |
+| Item legacy tanpa tim | Hanya admin. Dapat dirapikan dengan `./scripts/backfill-item-team.sh` |
 | Cakupan | `task`, `daily_task`, `notes` (Catatan sudah ber-scoping) |
 | Tidak berlaku | RFS/Tiket/Reminder (tetap seperti semula) |
 
-- **Create**: `team_id` dipaksa ke tim pengguna untuk non-admin; admin bebas.
+- **Create**: `team_id` dipaksa ke tim pengguna untuk non-admin; admin bebas
+  memilih, dan bila tidak memilih maka jatuh ke tim admin sendiri
+  (`resolveTeamForCreate` di `team_scope.go`).
 - **Read guard**: `canViewItemTeam` pada get/events/comments/komentar.
 - **Write guard**: `canWriteItemTeam` pada status/update/delete/assign/
   collaborator/escalate.
@@ -432,7 +434,7 @@ mengelola pekerjaannya sendiri.
 `collaborator_routes.go`, `daily_escalate_routes.go`,
 `internal/repository/work_items.go` (`TeamID`/`OwnerScopeUsername`),
 `internal/repository/events.go` (`DashboardScope`), FE `DailyTasks.tsx`,
-`Todos.tsx`, `api.ts`. **Tanpa migrasi DB.**
+`Todos.tsx`, `api.ts`, `scripts/backfill-item-team.sh`. **Tanpa migrasi DB.**
 
 ---
 

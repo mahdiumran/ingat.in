@@ -76,6 +76,7 @@ services:
     env_file: .env
     environment:
       INGATIN_MODE: migrate
+      TZ: ${INGATIN_TIMEZONE:-Asia/Jakarta}
     command: ["-mode=migrate"]
     depends_on:
       postgres:
@@ -98,6 +99,9 @@ services:
     environment:
       INGATIN_MODE: api
       INGATIN_ADDR: 0.0.0.0:8081
+      # TZ menyetel jam OS container; INGATIN_TIMEZONE menyetel logika aplikasi
+      # (cron/scheduling). Set keduanya ke zona yang sama agar konsisten.
+      TZ: ${INGATIN_TIMEZONE:-Asia/Jakarta}
     command: ["-mode=api"]
     ports:
       - "127.0.0.1:${INGATIN_API_PORT:-8081}:8081"
@@ -128,6 +132,7 @@ services:
     env_file: .env
     environment:
       INGATIN_MODE: worker
+      TZ: ${INGATIN_TIMEZONE:-Asia/Jakarta}
     # Flag -mode mengalahkan INGATIN_MODE, jadi keduanya diset agar eksplisit
     # dan tidak bergantung pada CMD bawaan image.
     command: ["-mode=worker"]
@@ -183,6 +188,7 @@ services:
     environment:
       INGATIN_WEB_PORT: ${INGATIN_WEB_PORT:-8091}
       INGATIN_API_UPSTREAM: ${INGATIN_API_UPSTREAM:-http://api:8081}
+      TZ: ${INGATIN_TIMEZONE:-Asia/Jakarta}
     ports:
       - "${INGATIN_WEB_PORT:-8091}:${INGATIN_WEB_PORT:-8091}"
     depends_on:

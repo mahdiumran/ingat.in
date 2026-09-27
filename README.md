@@ -145,7 +145,21 @@ docker compose up -d --build
 
 # Verifikasi
 ./scripts/smoke.sh
+
+# Rapikan task/daily_task lama yang "Tanpa tim" (isi dari tim pembuat)
+./scripts/backfill-item-team.sh --dry-run
+./scripts/backfill-item-team.sh
 ```
+
+---
+
+## Perbaikan: task "Tanpa tim" (F31)
+
+Bila task/Daily Task yang dibuat admin/super user muncul **"Tanpa tim"**, item
+seperti itu hanya terlihat admin. Sejak perbaikan ini, admin yang tidak memilih
+tim otomatis memakai **tim admin sendiri** (bukan kosong). Untuk data lama,
+jalankan `./scripts/backfill-item-team.sh` (isi dari tim pembuat). Lihat
+`ROADMAP.md` F31.
 
 ---
 

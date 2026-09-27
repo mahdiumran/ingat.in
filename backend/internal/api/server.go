@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -50,6 +51,41 @@ func New(cfg *config.Config, store *repository.Store, authMgr *auth.Manager, not
 		bot:         botDisp,
 		version:     cfg.AppVersion,
 	}
+}
+
+// location mengembalikan zona waktu operasional dari konfigurasi
+// (INGATIN_TIMEZONE). Bila nama zona tidak dikenal, jatuh ke WIB tetap (UTC+7)
+// agar pesan yang tampil ke pengguna tetap masuk akal, bukan UTC.
+func (s *Server) location() *time.Location {
+	name := "Asia/Jakarta"
+	if s != nil && s.cfg != nil && s.cfg.Timezone != "" {
+		name = s.cfg.Timezone
+	}
+	if loc, err := time.LoadLocation(name); err == nil {
+		return loc
+	}
+	return time.FixedZone("WIB", 7*3600)
+}
+
+// nowText mengembalikan waktu sekarang di zona operasional dalam format
+// "2006-01-02 15:04:05 MST" (mis. "2026-09-27 13:08:20 WIB").
+func (s *Server) nowText() string {
+	return time.Now().In(s.location()).Format("2006-01-02 15:04:05 MST")
+}
+
+// testMessageBody menyusun isi pesan uji notifikasi. Waktu ditampilkan di zona
+// operasional (mis. WIB), bukan UTC, karena pesan dibaca manusia.
+// channel opsional (kosong = baris "Channel" tidak disertakan).
+func (s *Server) testMessageBody(channel string) string {
+	var b strings.Builder
+	b.WriteString("✅ Ingat.in — pesan uji\n\nKanal notifikasi berfungsi.")
+	if channel != "" {
+		b.WriteString("\nChannel: ")
+		b.WriteString(channel)
+	}
+	b.WriteString("\nWaktu: ")
+	b.WriteString(s.nowText())
+	return b.String()
 }
 
 // Handler membangun router beserta middleware.

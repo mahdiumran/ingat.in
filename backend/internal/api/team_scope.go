@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/google/uuid"
+
 	"ingatin/backend/internal/models"
 )
 
@@ -23,6 +25,29 @@ import (
 // isTeamScopedType melaporkan apakah item_type dibatasi per tim (F31).
 func isTeamScopedType(itemType string) bool {
 	return itemType == models.ItemTask || itemType == models.ItemDailyTask
+}
+
+// resolveTeamForCreate menentukan team_id saat membuat item ber-team (F31).
+//
+// Aturan:
+//   - non-super : SELALU memakai tim pengguna; input dari klien diabaikan.
+//   - super     : memakai team_id pilihan klien bila diisi; bila kosong,
+//     jatuh ke tim pengguna sendiri agar item tidak "tanpa tim".
+//     (Item task/daily_task tanpa team_id hanya terlihat admin.)
+//
+// Bila super tidak memilih tim DAN pengguna super tidak punya tim, hasilnya nil
+// (perilaku lama dipertahankan — admin melihat semua item).
+func resolveTeamForCreate(requested *uuid.UUID, user *models.User, isSuper bool) *uuid.UUID {
+	if user == nil {
+		return requested
+	}
+	if !isSuper {
+		return user.TeamID
+	}
+	if requested != nil {
+		return requested
+	}
+	return user.TeamID
 }
 
 // canViewItemTeam melaporkan apakah user boleh MELIHAT item (F31).

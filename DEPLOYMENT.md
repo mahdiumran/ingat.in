@@ -132,7 +132,7 @@ Semua variabel memakai prefix `INGATIN_*`. Lihat `.env.example` untuk daftar len
 | `INGATIN_ACCESS_TOKEN_MINUTES` | `4320` | **72 jam** |
 | `INGATIN_REFRESH_TOKEN_DAYS` | `30` | Umur refresh token |
 | `INGATIN_SESSION_IDLE_TIMEOUT_MINUTES` | `0` | `0` = nonaktif |
-| `INGATIN_TIMEZONE` | `Asia/Jakarta` | Zona tampilan (penyimpanan tetap UTC) |
+| `INGATIN_TIMEZONE` | `Asia/Jakarta` | Zona **aplikasi** (cron/scheduling & tampilan). Harus nama IANA (mis. `Asia/Jakarta`), **bukan** `WIB`. Container juga menerima `TZ` dari nilai ini agar jam OS ikut sinkron. |
 | `INGATIN_DATA_DIR` | `/app/data` | Log, backup lokal, template |
 | `INGATIN_FRONTEND_ORIGIN` | `http://localhost:8091` | CORS |
 | `INGATIN_LOG_LEVEL` | `info` | `debug`/`info`/`warn`/`error` |
@@ -612,6 +612,9 @@ docker compose build && docker compose up -d
 | WAHA `FAILED` | versi WhatsApp Web tak cocok | `docker compose restart waha`; bila tetap, ganti tag image |
 | Notifikasi tidak terkirim | outbox `failed` | Cek Audit → Outbox, baca `last_error`; verifikasi provider & binding |
 | Backup gagal `pg_dump: server version mismatch` | memakai pg_dump host yang lebih lama | Jalankan `./scripts/backup.sh` (otomatis memakai container di Mode B) |
+| Jam container tidak WIB (tampil UTC) | `TZ`/`INGATIN_TIMEZONE` salah atau kosong; `timedatectl` host tidak memengaruhi container | Set `INGATIN_TIMEZONE=Asia/Jakarta` di `.env` lalu `docker compose up -d`. Verifikasi: `docker compose exec api date` harus menampilkan `WIB` |
+| Log aplikasi tampil UTC | by design — `main.go` memakai `log.LUTC` | Wajar; log sengaja UTC. Ubah kode bila ingin log WIB |
+| Cron/job terjadwal meleset 7 jam | `INGATIN_TIMEZONE` diisi `WIB` (bukan nama IANA) → `time.LoadLocation` gagal → fallback UTC | Ganti ke `Asia/Jakarta` |
 
 Kumpulkan diagnosa:
 

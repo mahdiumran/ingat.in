@@ -406,8 +406,7 @@ func (s *Server) handleSendTestMessage(w http.ResponseWriter, r *http.Request) {
 
 	body := strings.TrimSpace(req.Message)
 	if body == "" {
-		body = "✅ Ingat.in — pesan uji\n\nKanal notifikasi berfungsi.\nWaktu: " +
-			time.Now().UTC().Format(time.RFC3339)
+		body = s.testMessageBody("")
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)

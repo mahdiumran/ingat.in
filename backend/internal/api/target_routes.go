@@ -360,8 +360,7 @@ func (s *Server) handleTestBinding(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now().UTC()
-	body := "✅ Ingat.in — pesan uji\n\nKanal notifikasi berfungsi.\nChannel: " + binding.Channel +
-		"\nWaktu (UTC): " + now.Format(time.RFC3339)
+	body := s.testMessageBody(binding.Channel)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
