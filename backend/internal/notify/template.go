@@ -55,6 +55,9 @@ type Payload struct {
 	// F24: referensi tugas harian sumber tiket (daily task -> tiket).
 	ParentRef string
 
+	// F28: total tugas harian yang belum selesai (untuk summary).
+	TodoTotal int
+
 	// Pesan uji
 	TargetName string
 	Channel    string
@@ -221,6 +224,12 @@ func FallbackTemplate(key string) *models.NotificationTemplate {
 			Severity: models.SeverityInfo,
 			BodyTpl:  "📊 RINGKASAN TUGAS — {{.CreatedAt}}\n\n{{.Description}}",
 		}
+	case TemplateTodoSummary:
+		return &models.NotificationTemplate{
+			Key:      key,
+			Severity: models.SeverityWarning,
+			BodyTpl:  "📋 TODO BELUM SELESAI ({{.CreatedAt}})\n\nAda *{{.TodoTotal}}* tugas yang belum selesai:\n\n{{.Description}}",
+		}
 	case TemplateTicketFromDaily:
 		return &models.NotificationTemplate{
 			Key:      key,
@@ -262,6 +271,8 @@ const (
 	TemplateTicketFromDaily = "TICKET_FROM_DAILY"
 	// TemplateDailySummary adalah ringkasan harian task pending/in_progress/done.
 	TemplateDailySummary = "DAILY_SUMMARY"
+	// TemplateTodoSummary adalah reminder per jam untuk Todo Task yang belum selesai.
+	TemplateTodoSummary = "TODO_HOURLY_REMINDER"
 )
 
 // FormatWIB memformat waktu ke WIB untuk ditampilkan pada pesan notifikasi.

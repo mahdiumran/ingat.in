@@ -320,6 +320,7 @@ func payloadToMap(p Payload) map[string]any {
 		"category":        p.Category,
 		"target_name":     p.TargetName,
 		"channel":         p.Channel,
+		"todo_total":      p.TodoTotal,
 	}
 }
 
@@ -376,6 +377,16 @@ func payloadFromJSON(m map[string]any) Payload {
 	p.Category = get("category")
 	p.TargetName = get("target_name")
 	p.Channel = get("channel")
+	if v, ok := m["todo_total"]; ok {
+		switch n := v.(type) {
+		case float64:
+			p.TodoTotal = int(n)
+		case int:
+			p.TodoTotal = n
+		case string:
+			_, _ = fmt.Sscan(n, &p.TodoTotal)
+		}
+	}
 
 	return p
 }

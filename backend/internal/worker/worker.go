@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/robfig/cron/v3"
 
 	"ingatin/backend/internal/backup"
@@ -88,6 +89,13 @@ func (w *Worker) Start() {
 	// summary_interval_min sehingga dapat diubah operator tanpa deploy ulang.
 	if _, err := w.cron.AddFunc("* * * * *", w.runDailySummaryTick); err != nil {
 		log.Printf("worker: jadwal ringkasan tugas: %v", err)
+	}
+
+	// F35: reminder Todo Task yang belum selesai. Tick tiap menit; interval
+	// sebenarnya mengikuti setting todo_task.reminder_interval_min (default 60
+	// = tiap jam) sehingga dapat diubah operator tanpa deploy ulang.
+	if _, err := w.cron.AddFunc("* * * * *", w.runTodoReminderTick); err != nil {
+		log.Printf("worker: jadwal reminder todo: %v", err)
 	}
 
 	if _, err := w.cron.AddFunc("* * * * *", w.runSLATick); err != nil {
@@ -346,6 +354,115 @@ func (w *Worker) sendDailyTaskSummary(ctx context.Context, now time.Time) (int, 
 	return res.Added, nil
 }
 
+// runTodoReminderTick mengirim daftar Todo Task yang belum selesai sesuai
+// interval pada setting `todo_task.reminder_interval_min` (default 60 menit =
+// tiap jam).
+//
+// Tugas tidak dibatasi tanggal: yang belum selesai dari hari sebelumnya tetap
+// dikirim pada hari-hari berikutnya sampai ditandai selesai (closed).
+func (w *Worker) runTodoReminderTick() {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	w.withHealth(ctx, "todo_reminder", func() error {
+		interval := 60
+		if v, err := w.store.GetSetting(ctx, "todo_task.reminder_interval_min"); err == nil {
+			switch n := v["value"].(type) {
+			case float64:
+				interval = int(n)
+			case string:
+				if p, e := strconv.Atoi(strings.TrimSpace(n)); e == nil {
+					interval = p
+				}
+			}
+		}
+		if interval < 5 {
+			interval = 5
+		}
+		if interval > 1440 {
+			interval = 1440
+		}
+
+		now := time.Now().UTC()
+		// Kirim hanya pada kelipatan interval (menit) agar hemat.
+		if now.Minute()%interval != 0 {
+			return nil
+		}
+		return w.sendOpenTodoReminder(ctx, now)
+	})
+}
+
+func (w *Worker) sendOpenTodoReminder(ctx context.Context, now time.Time) error {
+	items, err := w.store.ListOpenTodoTasks(ctx)
+	if err != nil {
+		return err
+	}
+
+	type targetTodos struct {
+		id    string
+		items []models.WorkItem
+	}
+	groups := map[string]*targetTodos{}
+	for _, item := range items {
+		targetID, err := w.store.ResolveItemTargetID(ctx, &item)
+		if err != nil || targetID == nil {
+			continue
+		}
+		key := targetID.String()
+		group := groups[key]
+		if group == nil {
+			group = &targetTodos{id: key}
+			groups[key] = group
+		}
+		group.items = append(group.items, item)
+	}
+
+	loc, err := time.LoadLocation(w.cfg.Timezone)
+	if err != nil {
+		loc = time.UTC
+	}
+	slotKey := now.In(loc).Format("2006-01-02-15")
+	for _, group := range groups {
+		var lines strings.Builder
+		for _, item := range group.items {
+			lines.WriteString("• ")
+			lines.WriteString(item.RefNo)
+			lines.WriteString(" ")
+			lines.WriteString(item.Title)
+			if item.OwnerUsername != "" {
+				lines.WriteString(" — ")
+				lines.WriteString(item.OwnerUsername)
+			}
+			if item.DueAt != nil && item.DueAt.Before(now) {
+				lines.WriteString(" [TERLAMBAT]")
+			}
+			lines.WriteString("\n")
+		}
+
+		targetID, err := uuid.Parse(group.id)
+		if err != nil {
+			continue
+		}
+		_, err = w.outbox.Enqueue(ctx, notify.EnqueueParams{
+			EventKey:    "todo_hourly:" + slotKey + ":" + group.id,
+			SourceType:  "todo",
+			TemplateKey: notify.TemplateTodoSummary,
+			Severity:    models.SeverityWarning,
+			TargetID:    targetID,
+			Payload: notify.Payload{
+				Title:       "Reminder Todo Belum Selesai",
+				CreatedAt:   notify.FormatWIB(&now),
+				Description: strings.TrimSpace(lines.String()),
+				TodoTotal:   len(group.items),
+			},
+		})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func toSummaryTasks(in []repository.DailyTaskSummaryItem) []notify.SummaryTask {
 	out := make([]notify.SummaryTask, 0, len(in))
 	for _, it := range in {
@@ -590,9 +707,12 @@ func (w *Worker) runBackupTick() {
 	})
 }
 
-/* ---------------------------------------------------------------------------
-   Pembungkus
-   --------------------------------------------------------------------------- */
+/*
+---------------------------------------------------------------------------
+
+	Pembungkus
+	---------------------------------------------------------------------------
+*/
 func (w *Worker) withHealth(ctx context.Context, name string, fn func() error) {
 	defer func() {
 		if rec := recover(); rec != nil {

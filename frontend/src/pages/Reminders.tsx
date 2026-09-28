@@ -28,7 +28,7 @@ type ConfirmState = {
 }
 
 /** Status Reminder (sinkron dengan workitems.DefaultWorkflows["reminder"]). */
-export const REMINDER_STATUSES = ['scheduled', 'active', 'expiring', 'expired', 'cancelled']
+export const REMINDER_STATUSES = ['scheduled', 'active', 'expiring', 'expired', 'resolved', 'cancelled']
 
 /** Menghitung sisa waktu dari sebuah timestamp, dalam teks singkat. */
 function remainingText(expireAt?: string): { text: string; tone: string } {
@@ -84,6 +84,7 @@ export default function Reminders({
   const [editing, setEditing] = useState<WorkItem | null>(null)
   const [detailID, setDetailID] = useState<string | null>(null)
   const [notifyingID, setNotifyingID] = useState<string | null>(null)
+  const [resolvingID, setResolvingID] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<ConfirmState | null>(null)
   const [confirmBusy, setConfirmBusy] = useState(false)
 
@@ -139,6 +140,23 @@ export default function Reminders({
       toast('error', 'Gagal mengirim notifikasi', err instanceof Error ? err.message : undefined)
     } finally {
       setNotifyingID(null)
+    }
+  }
+
+  /**
+   * handleResolve menandai reminder sudah ditangani (status `resolved`).
+   * Setelah resolved, fanout berhenti mengantrikan ulang offset untuk item ini.
+   */
+  async function handleResolve(it: WorkItem) {
+    setResolvingID(it.id)
+    try {
+      await workItemsApi.changeStatus(it.id, 'resolved')
+      toast('success', 'Reminder ditandai selesai', `${it.ref_no} → resolved`)
+      items.reload()
+    } catch (err) {
+      toast('error', 'Gagal menandai selesai', err instanceof Error ? err.message : undefined)
+    } finally {
+      setResolvingID(null)
     }
   }
 
@@ -237,6 +255,7 @@ export default function Reminders({
               <option value="active">Active</option>
               <option value="expiring">Expiring</option>
               <option value="expired">Expired</option>
+              <option value="resolved">Resolved</option>
               <option value="cancelled">Cancelled</option>
             </select>
           </div>
@@ -343,6 +362,16 @@ export default function Reminders({
                           </button>
                           {canWrite && (
                             <>
+                              <button
+                                className="btn-ghost h-8 w-8 px-0 text-success"
+                                title="Tandai selesai (resolved)"
+                                disabled={resolvingID === it.id || it.status === 'resolved' || it.status === 'cancelled'}
+                                onClick={() => handleResolve(it)}
+                              >
+                                <span className={`material-symbols-outlined text-[18px] ${resolvingID === it.id ? 'animate-spin' : ''}`}>
+                                  {resolvingID === it.id ? 'progress_activity' : 'task_alt'}
+                                </span>
+                              </button>
                               <button
                                 className="btn-ghost h-8 w-8 px-0"
                                 title="Kirim notifikasi sekarang"

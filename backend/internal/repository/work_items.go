@@ -296,6 +296,20 @@ type ListWorkItemsParams struct {
 	NonTerminalStates []string
 }
 
+func (s *Store) ListOpenTodoTasks(ctx context.Context) ([]models.WorkItem, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT `+workItemColumns+` FROM work_items
+		WHERE NOT is_deleted
+		  AND item_type = 'task'
+		  AND status NOT IN ('closed','canceled')
+		ORDER BY due_at NULLS LAST, created_at, ref_no`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanWorkItems(rows)
+}
+
 // ListWorkItems mengambil daftar work item dengan filter.
 func (s *Store) ListWorkItems(ctx context.Context, p ListWorkItemsParams) ([]models.WorkItem, int, error) {
 	where := []string{"NOT is_deleted"}

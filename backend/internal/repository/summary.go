@@ -40,8 +40,8 @@ func (d DailyTaskSummary) CountByStatus() map[string]int {
 	}
 }
 
-// ListDailyTaskSummary mengambil tugas harian pada satu hari (start_at dalam
-// rentang [from, to)) beserta status overdue-nya. Status 'canceled' dibuang.
+// ListDailyTaskSummary mengambil tugas hari ini beserta carry-over yang belum
+// selesai dari hari sebelumnya. Status 'canceled' dibuang.
 func (s *Store) ListDailyTaskSummary(ctx context.Context, from, to time.Time) (DailyTaskSummary, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT ref_no, title, status, owner_username, due_at,
@@ -50,7 +50,8 @@ func (s *Store) ListDailyTaskSummary(ctx context.Context, from, to time.Time) (D
 		WHERE NOT is_deleted
 		  AND item_type = 'daily_task'
 		  AND status <> 'canceled'
-		  AND start_at >= $1 AND start_at < $2
+		  AND ((start_at >= $1 AND start_at < $2)
+		       OR (start_at < $1 AND status IN ('pending','in_progress','waiting_customer')))
 		ORDER BY due_at NULLS LAST, ref_no`, from, to)
 	if err != nil {
 		return DailyTaskSummary{}, err

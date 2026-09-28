@@ -129,6 +129,15 @@ func TestWorkflowReminderLifecycle(t *testing.T) {
 	if !wf.CanTransition("expired", "active") {
 		t.Error("reminder expired -> active harus diizinkan (perpanjangan)")
 	}
+	if !wf.CanTransition("active", "resolved") {
+		t.Error("reminder active -> resolved harus diizinkan")
+	}
+	if !wf.CanTransition("expired", "resolved") {
+		t.Error("reminder expired -> resolved harus diizinkan")
+	}
+	if !wf.EvaluateTransitions("active", "resolved").IsClosing {
+		t.Error("reminder active -> resolved harus terminal")
+	}
 }
 
 func TestWorkflowIncidentReopen(t *testing.T) {

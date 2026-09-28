@@ -225,16 +225,17 @@ func DefaultWorkflows() map[string]*Workflow {
 		"reminder": {
 			ItemType:     "reminder",
 			Name:         "Alur Reminder Standar",
-			States:       []string{"scheduled", "active", "expiring", "expired", "cancelled"},
+			States:       []string{"scheduled", "active", "expiring", "expired", "resolved", "cancelled"},
 			InitialState: "scheduled",
 			Transitions: map[string][]string{
-				"scheduled": {"active", "cancelled"},
-				"active":    {"expiring", "expired", "cancelled"},
-				"expiring":  {"expired", "active", "cancelled"},
-				"expired":   {"active"},
+				"scheduled": {"active", "resolved", "cancelled"},
+				"active":    {"expiring", "expired", "resolved", "cancelled"},
+				"expiring":  {"expired", "active", "resolved", "cancelled"},
+				"expired":   {"active", "resolved"},
+				"resolved":  {"active"},
 				"cancelled": {},
 			},
-			TerminalStates: []string{"expired", "cancelled"},
+			TerminalStates: []string{"resolved", "expired", "cancelled"},
 		},
 		"rfs": {
 			ItemType:     "rfs",

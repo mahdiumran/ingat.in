@@ -290,7 +290,7 @@ func (s *Store) UpcomingForDigest(ctx context.Context) ([]models.WorkItem, error
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+workItemColumns+` FROM work_items
 		WHERE NOT is_deleted
-		  AND status NOT IN ('done','cancelled','closed','activated','expired','fulfilled')
+		  AND status NOT IN ('done','cancelled','closed','activated','expired','fulfilled','resolved')
 		  AND (
 		    (due_at IS NOT NULL AND due_at <= now() + interval '24 hours')
 		    OR (expire_at IS NOT NULL AND expire_at <= now() + interval '24 hours')
@@ -309,7 +309,7 @@ func (s *Store) CountByTypeAndStatusRingkas(ctx context.Context) (map[string]int
 	rows, err := s.pool.Query(ctx, `
 		SELECT item_type, count(*) FROM work_items
 		WHERE NOT is_deleted
-		  AND status NOT IN ('done','cancelled','closed','activated','expired','fulfilled')
+		  AND status NOT IN ('done','cancelled','closed','activated','expired','fulfilled','resolved')
 		GROUP BY item_type`)
 	if err != nil {
 		return nil, err
