@@ -137,6 +137,7 @@ func (s *Server) sendDailyTaskSummaryNow(ctx context.Context, now time.Time, eve
 	group := notify.SummaryGroup{
 		Pending:    toSummaryTasksAPI(sum.Pending),
 		InProgress: toSummaryTasksAPI(sum.InProgress),
+		Waiting:    toSummaryTasksAPI(sum.Waiting),
 		Done:       toSummaryTasksAPI(sum.Done),
 	}
 	dayLabel := local.Format("02 Jan 2006 15:04")

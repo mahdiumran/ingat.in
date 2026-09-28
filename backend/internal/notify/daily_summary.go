@@ -18,16 +18,21 @@ type SummaryTask struct {
 type SummaryGroup struct {
 	Pending    []SummaryTask
 	InProgress []SummaryTask
+	Waiting    []SummaryTask
 	Done       []SummaryTask
 }
 
 // BuildDailySummary menyusun Description (ringkas) dan Notes (daftar) untuk
 // notifikasi ringkasan harian. Dipakai baik oleh job terjadwal maupun pemicu
 // "on change" dari API agar formatnya konsisten.
+//
+// "Belum selesai" pada Description adalah total tugas yang masih dikerjakan
+// (Belum selesai + Menunggu konfirmasi pelanggan), karena keduanya sama-sama
+// menuntut tindak lanjut. Notes tetap memisahkannya per status agar mudah dibaca.
 func BuildDailySummary(dayLabel string, g SummaryGroup) (description, notes string) {
 	description = fmt.Sprintf(
 		"🕗 %s\n• Belum selesai : %d\n• Sedang dikerjakan : %d\n• Selesai : %d",
-		dayLabel, len(g.Pending), len(g.InProgress), len(g.Done))
+		dayLabel, len(g.Pending)+len(g.Waiting), len(g.InProgress), len(g.Done))
 
 	var b strings.Builder
 	writeGroup := func(title string, items []SummaryTask) {
@@ -49,6 +54,7 @@ func BuildDailySummary(dayLabel string, g SummaryGroup) (description, notes stri
 	}
 	writeGroup("Belum selesai", g.Pending)
 	writeGroup("Sedang dikerjakan", g.InProgress)
+	writeGroup("Menunggu Konfirmasi Pelanggan", g.Waiting)
 	writeGroup("Selesai", g.Done)
 	notes = strings.TrimSpace(b.String())
 	return description, notes

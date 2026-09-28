@@ -23,20 +23,22 @@ type DailyTaskSummaryItem struct {
 type DailyTaskSummary struct {
 	Pending    []DailyTaskSummaryItem
 	InProgress []DailyTaskSummaryItem
+	Waiting    []DailyTaskSummaryItem
 	Done       []DailyTaskSummaryItem
 }
 
 // Total mengembalikan jumlah seluruh (kecuali canceled).
 func (d DailyTaskSummary) Total() int {
-	return len(d.Pending) + len(d.InProgress) + len(d.Done)
+	return len(d.Pending) + len(d.InProgress) + len(d.Waiting) + len(d.Done)
 }
 
 // CountByStatus mengembalikan jumlah per status utama.
 func (d DailyTaskSummary) CountByStatus() map[string]int {
 	return map[string]int{
-		"pending":     len(d.Pending),
-		"in_progress": len(d.InProgress),
-		"done":        len(d.Done),
+		"pending":          len(d.Pending),
+		"in_progress":      len(d.InProgress),
+		"waiting_customer": len(d.Waiting),
+		"done":             len(d.Done),
 	}
 }
 
@@ -67,6 +69,8 @@ func (s *Store) ListDailyTaskSummary(ctx context.Context, from, to time.Time) (D
 		switch it.Status {
 		case "in_progress":
 			out.InProgress = append(out.InProgress, it)
+		case "waiting_customer":
+			out.Waiting = append(out.Waiting, it)
 		case "done":
 			out.Done = append(out.Done, it)
 		default:

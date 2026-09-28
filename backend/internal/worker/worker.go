@@ -323,6 +323,7 @@ func (w *Worker) sendDailyTaskSummary(ctx context.Context, now time.Time) (int, 
 	group := notify.SummaryGroup{
 		Pending:    toSummaryTasks(sum.Pending),
 		InProgress: toSummaryTasks(sum.InProgress),
+		Waiting:    toSummaryTasks(sum.Waiting),
 		Done:       toSummaryTasks(sum.Done),
 	}
 	dayLabel := local.Format("02 Jan 2006 15:04")
