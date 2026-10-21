@@ -87,6 +87,15 @@ func (s *Server) handleAssignItem(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
+	// Penekan tombol "Kerjakan" (self-claim) otomatis tercatat sebagai penangan
+	// tambahan agar terkendali oleh aturan sembunyi tombol "Ikuti" dan tampil
+	// pada daftar "Ikut Menangani". Idempotent: menambah ulang tidak error.
+	if strings.EqualFold(target, actor) {
+		if _, err := s.store.AddCollaborator(r.Context(), item.ID, target, actor); err != nil {
+			writeInternalError(w, err)
+			return
+		}
+	}
 	_ = s.store.AppendEventSimple(r.Context(), item.ID, workitems.EventAssigned, map[string]any{
 		"owner_username": target,
 		"reason":         strings.TrimSpace(req.Reason),

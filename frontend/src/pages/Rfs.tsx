@@ -476,15 +476,22 @@ export default function Rfs({
                           {it.ref_no}
                         </button>
                       </td>
-                      <td className="max-w-[200px]">
-                        <button className="block truncate text-left font-medium hover:underline" onClick={() => setDetailID(it.id)}>
+                      <td className="max-w-[240px]">
+                        <button
+                          className="block w-full truncate text-left font-medium hover:underline"
+                          title={rfs?.customer_name || it.title}
+                          onClick={() => setDetailID(it.id)}
+                        >
                           {rfs?.customer_name || it.title}
                         </button>
-                        
                       </td>
-                      <td>
-                        <div className="text-body-sm">{rfs?.service_package || '—'}</div>
-                        <span className="mono text-label-sm text-text-secondary">{rfs?.bandwidth || '—'}</span>
+                      <td className="max-w-[200px]">
+                        <div className="truncate text-body-sm" title={rfs?.service_package || ''}>
+                          {rfs?.service_package || '—'}
+                        </div>
+                        <span className="mono block truncate text-label-sm text-text-secondary" title={rfs?.bandwidth || ''}>
+                          {rfs?.bandwidth || '—'}
+                        </span>
                       </td>
                       <td>
                         <PriorityPill priority={it.priority} />

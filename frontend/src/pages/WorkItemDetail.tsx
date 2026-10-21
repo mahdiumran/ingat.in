@@ -526,6 +526,29 @@ export function ItemDetail({
     (item.item_type === 'rfs' && ['activated', 'cancelled'].includes(item.status)) ||
     (item.item_type === 'reminder' && ['resolved', 'cancelled'].includes(item.status))
   )
+  // ---- Tim pembuat item (tiket/RFS tidak menyimpan team_id; tim efektif
+  // diturunkan dari tim pembuat). Dipakai memfilter dropdown force-reassign
+  // agar hanya satu tim. Bila pembuat tak ditemukan/tak bertim → null.
+  const creatorTeamID = (() => {
+    const creator = (users.data?.users ?? []).find(
+      (u) => u.username.toLowerCase() === (item?.created_by ?? '').toLowerCase(),
+    )
+    return creator?.team_id ?? null
+  })()
+
+  // ---- Dropdown admin "Tambah penangan": opsi user aktif yang belum menangani.
+  const collabCandidates = (users.data?.users ?? []).filter((u) => {
+    if (u.is_active === false) return false
+    return !(item?.collaborators ?? []).some((c) => c.username.toLowerCase() === u.username.toLowerCase())
+  })
+
+  // ---- Dropdown force-reassign: hanya user aktif satu tim dengan pembuat.
+  // Fallback (opsi B): bila tim pembuat tak diketahui, tampilkan semua aktif.
+  const assignCandidates = (users.data?.users ?? []).filter(
+    (u) => u.is_active !== false && (!creatorTeamID || u.team_id === creatorTeamID),
+  )
+  const assignFilterActive = !!creatorTeamID
+
   const reassignUser = (users.data?.users ?? []).find((u) => u.username === reassign?.username)
   /** canTransition melaporkan apakah transisi ke status tertentu diizinkan. */
   const canTransition = (target: string) => nextStates.includes(target)
@@ -1290,14 +1313,22 @@ export function ItemDetail({
                             disabled={busy || users.loading}
                           >
                             <option value="">— Pilih user —</option>
-                            {(users.data?.users ?? [])
-                              .filter((u) => u.is_active !== false)
-                              .map((u) => (
-                                <option key={u.id} value={u.username}>
-                                  {u.full_name ? `${u.username} — ${u.full_name}` : u.username}
-                                </option>
-                              ))}
+                            {assignCandidates.map((u) => (
+                              <option key={u.id} value={u.username}>
+                                {u.full_name ? `${u.username} — ${u.full_name}` : u.username}
+                              </option>
+                            ))}
                           </select>
+                          {!assignFilterActive && (
+                            <p className="mt-1 text-label-sm text-text-secondary">
+                              Pembuat sudah dihapus/tanpa tim — filter tim tidak tersedia, menampilkan semua user.
+                            </p>
+                          )}
+                          {assignFilterActive && assignCandidates.length === 0 && (
+                            <p className="mt-1 text-label-sm text-text-secondary">
+                              Tidak ada user aktif di tim ini.
+                            </p>
+                          )}
                         </div>
                         <button
                           className="btn-secondary"
@@ -1343,14 +1374,28 @@ export function ItemDetail({
                         )}
                       </div>
                       {/* Ikuti/kerjakan lewat tombol di header; di sini hanya kelola daftar. */}
-                      {canManage && (
+                      {/* Tambah penangan (admin): dropdown user, bukan input bebas. */}
+                      {isAdmin && (
                         <div className="mt-2 flex flex-wrap items-end gap-2">
-                          <input
-                            className="input mono h-9 flex-1 py-0"
-                            value={collabInput}
-                            onChange={(e) => setCollabInput(e.target.value)}
-                            placeholder="tambah penangan (username)"
-                          />
+                          <div className="min-w-[180px] flex-1">
+                            <label className="label-field" htmlFor="add-collab">
+                              Tambah penangan (admin)
+                            </label>
+                            <select
+                              id="add-collab"
+                              className="input mono h-9 py-0"
+                              value={collabInput}
+                              onChange={(e) => setCollabInput(e.target.value)}
+                              disabled={busy || users.loading || collabCandidates.length === 0}
+                            >
+                              <option value="">— Pilih user —</option>
+                              {collabCandidates.map((u) => (
+                                <option key={u.id} value={u.username}>
+                                  {u.full_name ? `${u.username} — ${u.full_name}` : u.username}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
                           <button
                             className="btn-secondary h-9"
                             disabled={busy || !collabInput.trim()}
@@ -1359,6 +1404,11 @@ export function ItemDetail({
                             Tambah
                           </button>
                         </div>
+                      )}
+                      {isAdmin && collabCandidates.length === 0 && (item.collaborators ?? []).length > 0 && (
+                        <p className="mt-1 text-label-sm text-text-secondary">
+                          Semua user aktif sudah menjadi penangan.
+                        </p>
                       )}
                     </div>
                   </section>
