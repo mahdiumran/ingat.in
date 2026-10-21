@@ -1,4 +1,5 @@
 import { ReactNode, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { tagClass } from '../design/tokens'
 
 /* ---------------------------------------------------------------------------
@@ -404,23 +405,56 @@ export type ActionMenuItem = {
 
 export function ActionMenu({ items, label = 'Penanganan' }: { items: ActionMenuItem[]; label?: string }) {
   const [open, setOpen] = useState(false)
+  const [position, setPosition] = useState({ top: 0, left: 0, maxHeight: 320 })
   const ref = useRef<HTMLDivElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (!open) return
+
+    const updatePosition = () => {
+      const trigger = ref.current?.getBoundingClientRect()
+      if (!trigger) return
+      const menuWidth = Math.max(190, menuRef.current?.offsetWidth ?? 190)
+      const menuHeight = menuRef.current?.offsetHeight ?? Math.min(items.length * 40 + 8, 320)
+      const margin = 8
+      const gap = 4
+      const spaceBelow = window.innerHeight - trigger.bottom - margin
+      const spaceAbove = trigger.top - margin
+      const placeAbove = spaceBelow < Math.min(menuHeight, 180) && spaceAbove > spaceBelow
+      const maxHeight = Math.max(120, placeAbove ? spaceAbove - gap : spaceBelow - gap)
+      const top = placeAbove
+        ? Math.max(margin, trigger.top - Math.min(menuHeight, maxHeight) - gap)
+        : trigger.bottom + gap
+      const left = Math.min(
+        Math.max(margin, trigger.right - menuWidth),
+        window.innerWidth - menuWidth - margin,
+      )
+      setPosition({ top, left, maxHeight })
+    }
+
     const closeOutside = (event: MouseEvent) => {
-      if (ref.current && !ref.current.contains(event.target as Node)) setOpen(false)
+      const target = event.target as Node
+      if (!ref.current?.contains(target) && !menuRef.current?.contains(target)) setOpen(false)
     }
     const closeEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setOpen(false)
     }
+
+    updatePosition()
+    const frame = window.requestAnimationFrame(updatePosition)
     document.addEventListener('mousedown', closeOutside)
     document.addEventListener('keydown', closeEscape)
+    window.addEventListener('resize', updatePosition)
+    window.addEventListener('scroll', updatePosition, true)
     return () => {
+      window.cancelAnimationFrame(frame)
       document.removeEventListener('mousedown', closeOutside)
       document.removeEventListener('keydown', closeEscape)
+      window.removeEventListener('resize', updatePosition)
+      window.removeEventListener('scroll', updatePosition, true)
     }
-  }, [open])
+  }, [open, items.length])
 
   const tones = {
     default: 'text-text-secondary hover:bg-surface-container hover:text-text-primary',
@@ -428,6 +462,32 @@ export function ActionMenu({ items, label = 'Penanganan' }: { items: ActionMenuI
     success: 'text-success hover:bg-success-container/40',
     danger: 'text-critical hover:bg-critical-container/40',
   }
+
+  const menu = open ? (
+    <div
+      ref={menuRef}
+      role="menu"
+      style={{ top: position.top, left: position.left, maxHeight: position.maxHeight }}
+      className="fixed z-[80] min-w-[190px] overflow-y-auto rounded-card border border-border bg-surface-container-lowest py-1 shadow-modal"
+    >
+      {items.map((item, index) => (
+        <button
+          key={`${item.label}-${index}`}
+          type="button"
+          role="menuitem"
+          disabled={item.disabled}
+          onClick={() => {
+            setOpen(false)
+            item.onClick()
+          }}
+          className={`flex w-full items-center gap-2.5 px-3 py-2 text-left text-body-sm disabled:cursor-not-allowed disabled:opacity-45 ${tones[item.tone ?? 'default']}`}
+        >
+          <span className="material-symbols-outlined text-[18px]">{item.icon}</span>
+          <span>{item.label}</span>
+        </button>
+      ))}
+    </div>
+  ) : null
 
   return (
     <div className="relative" ref={ref}>
@@ -441,29 +501,7 @@ export function ActionMenu({ items, label = 'Penanganan' }: { items: ActionMenuI
         {label}
         <span className="material-symbols-outlined text-[17px]">arrow_drop_down</span>
       </button>
-      {open && (
-        <div
-          role="menu"
-          className="absolute right-0 top-9 z-40 min-w-[190px] overflow-hidden rounded-card border border-border bg-surface-container-lowest py-1 shadow-modal"
-        >
-          {items.map((item, index) => (
-            <button
-              key={`${item.label}-${index}`}
-              type="button"
-              role="menuitem"
-              disabled={item.disabled}
-              onClick={() => {
-                setOpen(false)
-                item.onClick()
-              }}
-              className={`flex w-full items-center gap-2.5 px-3 py-2 text-left text-body-sm disabled:cursor-not-allowed disabled:opacity-45 ${tones[item.tone ?? 'default']}`}
-            >
-              <span className="material-symbols-outlined text-[18px]">{item.icon}</span>
-              <span>{item.label}</span>
-            </button>
-          ))}
-        </div>
-      )}
+      {menu && createPortal(menu, document.body)}
     </div>
   )
 }
