@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ApiUser, masterDataApi, notificationApi, WorkItem, workItemsApi } from '../api'
 import {
+  ActionMenu,
   ConfirmDialog,
   EmptyState,
   ErrorState,
@@ -44,6 +45,33 @@ const TICKET_STATUSES: Record<string, string[]> = {
 const PRIORITIES = ['low', 'normal', 'high', 'critical']
 const LEVELS = ['low', 'medium', 'high']
 
+/** Filter status per kartu statistik, disesuaikan dengan alur tiap tipe. */
+function statusByStat(itemType: string) {
+  if (itemType === 'change') {
+    const open = 'draft,review,approved,scheduled,implementing'
+    return {
+      todo: { statusIn: 'draft,review,approved,scheduled', slaState: '' },
+      doing: { statusIn: 'implementing', slaState: '' },
+      late: { statusIn: open, slaState: 'breached' },
+      done: { statusIn: 'completed,rolled_back', slaState: '' },
+    }
+  }
+  if (itemType === 'request') {
+    return {
+      todo: { statusIn: 'new,assigned', slaState: '' },
+      doing: { statusIn: 'in_progress,pending_customer', slaState: '' },
+      late: { statusIn: 'new,assigned,in_progress,pending_customer', slaState: 'breached' },
+      done: { statusIn: 'fulfilled,closed', slaState: '' },
+    }
+  }
+  return {
+    todo: { statusIn: 'new,assigned', slaState: '' },
+    doing: { statusIn: 'in_progress,pending_customer', slaState: '' },
+    late: { statusIn: 'new,assigned,in_progress,pending_customer', slaState: 'breached' },
+    done: { statusIn: 'resolved,closed', slaState: '' },
+  }
+}
+
 /**
  * Tickets (F10) — item_type = incident / request / change.
  *
@@ -70,6 +98,9 @@ export default function Tickets({
   const [itemType, setItemType] = useState('incident')
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState('')
+  const [statusIn, setStatusIn] = useState('')
+  const [slaState, setSlaState] = useState('')
+  const [stats, setStats] = useState({ todo: 0, doing: 0, late: 0, done: 0 })
   const [priority, setPriority] = useState('')
   const [creator, setCreator] = useState('')
   const [offset, setOffset] = useState(0)
@@ -77,6 +108,7 @@ export default function Tickets({
   const [editing, setEditing] = useState<WorkItem | null>(null)
   const [detailID, setDetailID] = useState<string | null>(null)
   const [notifyingID, setNotifyingID] = useState<string | null>(null)
+  const [joiningID, setJoiningID] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<ConfirmState | null>(null)
 
   const tagColors = useTagColors()
@@ -104,14 +136,55 @@ export default function Tickets({
       workItemsApi.list({
         type: itemType,
         ...(status ? { status } : {}),
+        ...(statusIn ? { status_in: statusIn } : {}),
+        ...(slaState ? { sla_state: slaState } : {}),
         ...(priority ? { priority } : {}),
         ...(creator ? { owner: creator } : {}),
         ...(debouncedSearch ? { q: debouncedSearch } : {}),
         limit: String(limit),
         offset: String(offset),
       }),
-    [itemType, status, priority, creator, debouncedSearch, offset],
+    [itemType, status, statusIn, slaState, priority, creator, debouncedSearch, offset],
   )
+
+  const statFilters = statusByStat(itemType)
+
+  // Total ringkas lintas halaman untuk kartu statistik.
+  useEffect(() => {
+    let cancelled = false
+    const count = (filters: Parameters<typeof workItemsApi.list>[0]) =>
+      workItemsApi.list({ ...filters, type: itemType, limit: '1' }).then((res) => res.total ?? 0)
+    const f = statusByStat(itemType)
+    Promise.all([
+      count({ status_in: f.todo.statusIn }).catch(() => 0),
+      count({ status_in: f.doing.statusIn }).catch(() => 0),
+      count({ status_in: f.late.statusIn, sla_state: f.late.slaState }).catch(() => 0),
+      count({ status_in: f.done.statusIn }).catch(() => 0),
+    ]).then(([todo, doing, late, done]) => {
+      if (!cancelled) setStats({ todo, doing, late, done })
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [itemType, items.data])
+
+  function resetStatFilters() {
+    setStatusIn('')
+    setSlaState('')
+    setStatus('')
+    setOffset(0)
+  }
+
+  function filterByStat(kind: 'todo' | 'doing' | 'late' | 'done') {
+    if (statusIn === statFilters[kind].statusIn && slaState === statFilters[kind].slaState) {
+      resetStatFilters()
+      return
+    }
+    setStatusIn(statFilters[kind].statusIn)
+    setSlaState(statFilters[kind].slaState)
+    setStatus('')
+    setOffset(0)
+  }
 
   const rows = items.data?.items ?? []
   const total = items.data?.total ?? 0
@@ -153,6 +226,29 @@ export default function Tickets({
       toast('error', 'Gagal mengirim notifikasi', err instanceof Error ? err.message : undefined)
     } finally {
       setNotifyingID(null)
+    }
+  }
+
+  async function handleJoinTicket(item: WorkItem) {
+    if (!user?.username) return
+    setJoiningID(item.id)
+    try {
+      if (!item.owner_username) {
+        await workItemsApi.assign(item.id, user.username)
+        toast('success', 'Tiket mulai dikerjakan', `${item.ref_no} ditetapkan kepada ${user.username}`)
+      } else {
+        const result = await workItemsApi.addCollaborator(item.id, user.username)
+        toast(
+          result.inserted ? 'success' : 'info',
+          result.inserted ? 'Berhasil mengikuti tiket' : 'Sudah mengikuti tiket',
+          item.ref_no,
+        )
+      }
+      items.reload()
+    } catch (err) {
+      toast('error', 'Gagal mengikuti tiket', err instanceof Error ? err.message : undefined)
+    } finally {
+      setJoiningID(null)
     }
   }
 
@@ -199,6 +295,8 @@ export default function Tickets({
             onClick={() => {
               setItemType(t.value)
               setStatus('')
+              setStatusIn('')
+              setSlaState('')
               setOffset(0)
             }}
             className={t.value === itemType ? 'btn-primary' : 'btn-secondary'}
@@ -206,6 +304,38 @@ export default function Tickets({
             {t.label}
           </button>
         ))}
+      </div>
+
+      {/* Statistik tiket — klik kartu untuk memfilter daftar. */}
+      <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <StatFilterCard
+          label="Belum dikerjakan"
+          value={stats.todo}
+          tone="bg-surface-container text-text-secondary border-outline-variant"
+          active={statusIn === statFilters.todo.statusIn && !slaState}
+          onClick={() => filterByStat('todo')}
+        />
+        <StatFilterCard
+          label="Sedang dikerjakan"
+          value={stats.doing}
+          tone="bg-info-container text-on-info-container border-outline-variant"
+          active={statusIn === statFilters.doing.statusIn && !slaState}
+          onClick={() => filterByStat('doing')}
+        />
+        <StatFilterCard
+          label="Terlambat"
+          value={stats.late}
+          tone={stats.late > 0 ? 'bg-critical-container text-on-critical-container border-critical' : 'bg-surface-container text-text-secondary border-outline-variant'}
+          active={statusIn === statFilters.late.statusIn && slaState === 'breached'}
+          onClick={() => filterByStat('late')}
+        />
+        <StatFilterCard
+          label="Sudah selesai"
+          value={stats.done}
+          tone="bg-success-container text-on-success-container border-outline-variant"
+          active={statusIn === statFilters.done.statusIn && !slaState}
+          onClick={() => filterByStat('done')}
+        />
       </div>
 
       <section className="card mb-5 p-4">
@@ -235,6 +365,8 @@ export default function Tickets({
               value={status}
               onChange={(e) => {
                 setStatus(e.target.value)
+                setStatusIn('')
+                setSlaState('')
                 setOffset(0)
               }}
             >
@@ -364,7 +496,6 @@ export default function Tickets({
                       <button className="block truncate text-left font-medium hover:underline" onClick={() => setDetailID(it.id)}>
                         {it.title}
                       </button>
-                      {it.device_ref && <span className="mono text-label-sm text-text-secondary">{it.device_ref}</span>}
                     </td>
                     <td className="max-w-[160px]">
                       <div className="truncate text-body-sm">{it.ticket?.category || '—'}</div>
@@ -392,34 +523,40 @@ export default function Tickets({
                       )}
                     </td>
                     <td className="w-px whitespace-nowrap">
-                      <div className="flex justify-end gap-1">
-                        <button className="btn-ghost h-8 w-8 px-0" title="Detail" onClick={() => setDetailID(it.id)}>
-                          <span className="material-symbols-outlined text-[18px]">open_in_new</span>
-                        </button>
+                      <div className="flex justify-end gap-2">
                         {canWrite && (
-                          <>
-                            <button
-                              className="btn-ghost h-8 w-8 px-0"
-                              title="Kirim notifikasi sekarang"
-                              disabled={notifyingID === it.id}
-                              onClick={() => handleNotify(it)}
-                            >
-                              <span className={`material-symbols-outlined text-[18px] ${notifyingID === it.id ? 'animate-spin' : ''}`}>
-                                {notifyingID === it.id ? 'progress_activity' : 'send'}
-                              </span>
-                            </button>
-                            {canManage(it) && (
-                              <button className="btn-ghost h-8 w-8 px-0" title="Edit" onClick={() => setEditing(it)}>
-                                <span className="material-symbols-outlined text-[18px]">edit</span>
-                              </button>
-                            )}
-                            {canManage(it) && (
-                              <button className="btn-ghost h-8 w-8 px-0 text-critical" title="Hapus" onClick={() => handleDelete(it)}>
-                                <span className="material-symbols-outlined text-[18px]">delete</span>
-                              </button>
-                            )}
-                          </>
+                          <button
+                            className="btn-primary h-8 px-2 text-label-sm"
+                            disabled={joiningID === it.id || it.status === 'closed' || it.status === 'completed' || it.status === 'cancelled'}
+                            onClick={() => handleJoinTicket(it)}
+                            title={it.owner_username ? 'Ikuti tiket sebagai penangan tambahan' : 'Ambil dan kerjakan tiket'}
+                          >
+                            <span className={`material-symbols-outlined text-[16px] ${joiningID === it.id ? 'animate-spin' : ''}`}>
+                              {joiningID === it.id ? 'progress_activity' : it.owner_username ? 'group_add' : 'play_arrow'}
+                            </span>
+                            {it.owner_username ? 'Ikuti Tiket' : 'Kerjakan'}
+                          </button>
                         )}
+                        <ActionMenu
+                          label="Penanganan"
+                          items={[
+                            { label: 'Lihat detail', icon: 'open_in_new', onClick: () => setDetailID(it.id) },
+                            ...(canWrite
+                              ? [{
+                                  label: 'Kirim notifikasi',
+                                  icon: notifyingID === it.id ? 'progress_activity' : 'send',
+                                  disabled: notifyingID === it.id,
+                                  onClick: () => handleNotify(it),
+                                }]
+                              : []),
+                            ...(canWrite && canManage(it)
+                              ? [
+                                  { label: 'Edit tiket', icon: 'edit', onClick: () => setEditing(it) },
+                                  { label: 'Hapus tiket', icon: 'delete', tone: 'danger' as const, onClick: () => handleDelete(it) },
+                                ]
+                              : []),
+                          ]}
+                        />
                       </div>
                     </td>
                   </tr>
@@ -500,6 +637,8 @@ function TicketForm({
   // Kategori & subkategori dari Master Data (hierarki parent_id).
   const categories = useAsync(() => masterDataApi.list({ kind: 'ticket_category' }), [])
   const incidentTypes = useAsync(() => masterDataApi.list({ kind: 'incident_type' }), [])
+  // Tag tiket dari Master Data (kind ticket_tag), multi-pilih.
+  const tagOptions = useAsync(() => masterDataApi.list({ kind: 'ticket_tag', active: 'true' }), [])
 
   const [title, setTitle] = useState(entry?.title ?? '')
   const [description, setDescription] = useState(entry?.description ?? '')
@@ -511,8 +650,12 @@ function TicketForm({
   const [impact, setImpact] = useState(entry?.ticket?.impact ?? 'medium')
   const [urgency, setUrgency] = useState(entry?.ticket?.urgency ?? 'medium')
   const [group, setGroup] = useState(entry?.ticket?.assignment_group ?? '')
-  const [tags, setTags] = useState((entry?.tags ?? []).join(', '))
+  const [tags, setTags] = useState<string[]>(entry?.tags ?? [])
   const [busy, setBusy] = useState(false)
+
+  function toggleTag(code: string) {
+    setTags((prev) => (prev.includes(code) ? prev.filter((t) => t !== code) : [...prev, code]))
+  }
 
   const allEntries = categories.data?.entries ?? []
   // Kategori = entri tanpa parent; subkategori = anak dari kategori terpilih.
@@ -532,12 +675,7 @@ function TicketForm({
         description,
         priority,
         target_id: targetId || '',
-        tags: tags
-          ? tags
-              .split(',')
-              .map((t) => t.trim())
-              .filter(Boolean)
-          : [],
+        tags,
       }
       const ticket = {
         category,
@@ -730,16 +868,29 @@ function TicketForm({
             </select>
           </div>
           <div>
-            <label className="label-field" htmlFor="tf-tags">
-              Tag
-            </label>
-            <input
-              id="tf-tags"
-              className="input"
-              value={tags}
-              onChange={(e) => setTags(e.target.value)}
-              placeholder="bgp, cgk1 (pisahkan dengan koma)"
-            />
+            <div className="label-field">Tag</div>
+            <div className="flex flex-wrap gap-1.5">
+              {(tagOptions.data?.entries ?? []).map((t) => {
+                const on = tags.includes(t.label)
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => toggleTag(t.label)}
+                    className={`badge border transition ${
+                      on
+                        ? 'border-primary bg-primary-container text-on-primary-container'
+                        : 'border-outline-variant bg-surface-container text-text-secondary'
+                    }`}
+                  >
+                    {t.label}
+                  </button>
+                )
+              })}
+              {(tagOptions.data?.entries ?? []).length === 0 && (
+                <span className="text-label-sm text-text-secondary">Belum ada tag di Master Data.</span>
+              )}
+            </div>
           </div>
         </div>
 
@@ -749,5 +900,37 @@ function TicketForm({
         </p>
       </form>
     </Modal>
+  )
+}
+
+/** StatFilterCard — kartu ringkasan yang dapat diklik untuk memfilter daftar. */
+function StatFilterCard({
+  label,
+  value,
+  tone,
+  active,
+  onClick,
+}: {
+  label: string
+  value: number
+  tone: string
+  active: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`card px-4 py-3 text-left transition hover:bg-surface-container-low/70 ${
+        active ? 'ring-2 ring-primary' : ''
+      }`}
+      aria-pressed={active}
+    >
+      <div className="kicker">{label}</div>
+      <div className="mt-0.5 flex items-center gap-2">
+        <span className="font-headline text-xl font-semibold">{value}</span>
+        <span className={`badge ${tone}`} aria-hidden />
+      </div>
+    </button>
   )
 }

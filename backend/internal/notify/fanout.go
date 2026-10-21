@@ -222,6 +222,11 @@ func (f *Fanout) runRFS(ctx context.Context) error {
 			log.Printf("fanout: detail rfs %s: %v", item.RefNo, err)
 			continue
 		}
+		// RFS sudah diaktivasi/dibatalkan (ticket resolved): hentikan pengingat
+		// agar offset berikutnya tidak lagi diantrikan untuk item ini.
+		if details.InstallStage == models.RFSStageActivated || details.InstallStage == models.RFSStageCancelled {
+			continue
+		}
 
 		for _, offset := range policy.Offsets {
 			dueAt, label := offsetTime(*item.ExpireAt, offset)

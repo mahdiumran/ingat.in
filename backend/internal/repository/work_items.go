@@ -266,9 +266,13 @@ func (s *Store) computeCompletion(ctx context.Context, wi *models.WorkItem) {
 
 // ListWorkItemsParams adalah filter daftar work item.
 type ListWorkItemsParams struct {
-	ItemType   string
-	Status     string
-	Priority   string
+	ItemType string
+	Status   string
+	// StatusIn memfilter beberapa status sekaligus (mis. new,assigned).
+	StatusIn []string
+	Priority string
+	// SLAState memfilter berdasarkan work_items.sla_state (mis. "breached").
+	SLAState   string
 	Owner      string
 	TeamID     *uuid.UUID
 	TargetID   *uuid.UUID
@@ -325,8 +329,18 @@ func (s *Store) ListWorkItems(ctx context.Context, p ListWorkItemsParams) ([]mod
 	if p.Status != "" {
 		where = append(where, "status = "+arg(p.Status))
 	}
+	if len(p.StatusIn) > 0 {
+		placeholders := make([]string, 0, len(p.StatusIn))
+		for _, st := range p.StatusIn {
+			placeholders = append(placeholders, arg(st))
+		}
+		where = append(where, "status IN ("+strings.Join(placeholders, ", ")+")")
+	}
 	if p.Priority != "" {
 		where = append(where, "priority = "+arg(p.Priority))
+	}
+	if p.SLAState != "" {
+		where = append(where, "sla_state = "+arg(p.SLAState))
 	}
 	if p.Owner != "" {
 		where = append(where, "owner_username = "+arg(p.Owner))

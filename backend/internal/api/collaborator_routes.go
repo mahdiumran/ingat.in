@@ -47,7 +47,7 @@ func (s *Server) handleAssignItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// F31: task & daily_task hanya dapat diubah oleh tim yang sama.
-	if !s.canWriteItemTeam(r, userFrom(r), item) {
+	if !s.canJoinItemTeam(r, userFrom(r), item) {
 		writeErr(w, http.StatusForbidden, "tidak berhak mengubah item ini")
 		return
 	}
@@ -124,7 +124,7 @@ func (s *Server) handleAddCollaborator(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// F31: task & daily_task hanya dapat diubah oleh tim yang sama.
-	if !s.canWriteItemTeam(r, userFrom(r), item) {
+	if !s.canJoinItemTeam(r, userFrom(r), item) {
 		writeErr(w, http.StatusForbidden, "tidak berhak mengubah item ini")
 		return
 	}
@@ -180,7 +180,7 @@ func (s *Server) handleRemoveCollaborator(w http.ResponseWriter, r *http.Request
 		return
 	}
 	// F31: task & daily_task hanya dapat diubah oleh tim yang sama.
-	if !s.canWriteItemTeam(r, userFrom(r), item) {
+	if !s.canJoinItemTeam(r, userFrom(r), item) {
 		writeErr(w, http.StatusForbidden, "tidak berhak mengubah item ini")
 		return
 	}

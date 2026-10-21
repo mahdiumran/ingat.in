@@ -197,7 +197,7 @@ func (s *Store) WorkItemsDueOffsets(ctx context.Context, itemType string, limit 
 		WHERE NOT is_deleted
 		  AND item_type = $1
 		  AND expire_at IS NOT NULL
-		  AND status NOT IN ('done','cancelled','closed','activated','expired','fulfilled')
+		  AND status NOT IN ('done','cancelled','closed','activated','expired','fulfilled','resolved')
 		ORDER BY expire_at
 		LIMIT $2`, itemType, limit)
 	if err != nil {

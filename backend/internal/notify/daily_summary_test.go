@@ -43,10 +43,10 @@ func TestBuildDailySummaryGroups(t *testing.T) {
 		"— Sedang dikerjakan (1) —",
 		"— Menunggu Konfirmasi Pelanggan (1) —",
 		"— Selesai (1) —",
-		"• DTK-2026-0001 Cek BGP — budi",
-		"• DTK-2026-0002 Pengecekan PT Myfren — mahdi [TERLAMBAT]",
-		"• DTK-2026-0003 Restart uplink — andi [TERLAMBAT]",
-		"• DTK-2026-0004 Pindah port HSP",
+		"• DTK-2026-0001 Cek BGP 🔴 — budi",
+		"• DTK-2026-0002 Pengecekan PT Myfren ❓ — mahdi [TERLAMBAT]",
+		"• DTK-2026-0003 Restart uplink 🟡 — andi [TERLAMBAT]",
+		"• DTK-2026-0004 Pindah port HSP ✅",
 	} {
 		if !strings.Contains(notes, want) {
 			t.Errorf("notes tidak memuat %q, got:\n%s", want, notes)

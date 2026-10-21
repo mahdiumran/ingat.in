@@ -222,7 +222,7 @@ func FallbackTemplate(key string) *models.NotificationTemplate {
 		return &models.NotificationTemplate{
 			Key:      key,
 			Severity: models.SeverityInfo,
-			BodyTpl:  "📊 RINGKASAN TUGAS — {{.CreatedAt}}\n\n{{.Description}}",
+			BodyTpl:  "📊 RINGKASAN TUGAS — {{.CreatedAt}}\n\n{{.Description}}\n\n{{.Notes}}",
 		}
 	case TemplateTodoSummary:
 		return &models.NotificationTemplate{

@@ -1,4 +1,4 @@
-import { ReactNode } from 'react'
+import { ReactNode, useEffect, useRef, useState } from 'react'
 import { tagClass } from '../design/tokens'
 
 /* ---------------------------------------------------------------------------
@@ -390,6 +390,80 @@ export function PageHeader({
         {description && <p className="mt-1 text-body-sm text-text-secondary">{description}</p>}
       </div>
       {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
+    </div>
+  )
+}
+
+export type ActionMenuItem = {
+  label: string
+  icon: string
+  onClick: () => void
+  disabled?: boolean
+  tone?: 'default' | 'warning' | 'success' | 'danger'
+}
+
+export function ActionMenu({ items, label = 'Penanganan' }: { items: ActionMenuItem[]; label?: string }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const closeOutside = (event: MouseEvent) => {
+      if (ref.current && !ref.current.contains(event.target as Node)) setOpen(false)
+    }
+    const closeEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', closeOutside)
+    document.addEventListener('keydown', closeEscape)
+    return () => {
+      document.removeEventListener('mousedown', closeOutside)
+      document.removeEventListener('keydown', closeEscape)
+    }
+  }, [open])
+
+  const tones = {
+    default: 'text-text-secondary hover:bg-surface-container hover:text-text-primary',
+    warning: 'text-warning hover:bg-warning-container/40',
+    success: 'text-success hover:bg-success-container/40',
+    danger: 'text-critical hover:bg-critical-container/40',
+  }
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        className="btn-secondary h-8 gap-1 px-2 text-label-sm"
+        onClick={() => setOpen((value) => !value)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        {label}
+        <span className="material-symbols-outlined text-[17px]">arrow_drop_down</span>
+      </button>
+      {open && (
+        <div
+          role="menu"
+          className="absolute right-0 top-9 z-40 min-w-[190px] overflow-hidden rounded-card border border-border bg-surface-container-lowest py-1 shadow-modal"
+        >
+          {items.map((item, index) => (
+            <button
+              key={`${item.label}-${index}`}
+              type="button"
+              role="menuitem"
+              disabled={item.disabled}
+              onClick={() => {
+                setOpen(false)
+                item.onClick()
+              }}
+              className={`flex w-full items-center gap-2.5 px-3 py-2 text-left text-body-sm disabled:cursor-not-allowed disabled:opacity-45 ${tones[item.tone ?? 'default']}`}
+            >
+              <span className="material-symbols-outlined text-[18px]">{item.icon}</span>
+              <span>{item.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

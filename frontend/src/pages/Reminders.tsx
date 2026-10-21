@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { ApiUser, EscalationPolicy, notificationApi, WorkItem, workItemsApi } from '../api'
 import {
+  ActionMenu,
   ConfirmDialog,
   EmptyState,
   ErrorState,
@@ -30,9 +31,11 @@ type ConfirmState = {
 /** Status Reminder (sinkron dengan workitems.DefaultWorkflows["reminder"]). */
 export const REMINDER_STATUSES = ['scheduled', 'active', 'expiring', 'expired', 'resolved', 'cancelled']
 
-/** Menghitung sisa waktu dari sebuah timestamp, dalam teks singkat. */
-function remainingText(expireAt?: string): { text: string; tone: string } {
-  if (!expireAt) return { text: '—', tone: 'text-text-secondary' }
+/** Menghitung sisa waktu dari sebuah timestamp, dalam teks singkat.
+ *  Tidak berjalan lagi setelah reminder resolved/cancelled. */
+function remainingText(expireAt?: string, status?: string): { text: string; tone: string } {
+  const isClosed = status === 'resolved' || status === 'cancelled'
+  if (!expireAt || isClosed) return { text: '—', tone: 'text-text-secondary' }
   const ms = new Date(expireAt).getTime() - Date.now()
   const late = ms < 0
   const abs = Math.abs(ms)
@@ -325,7 +328,7 @@ export default function Reminders({
               </thead>
               <tbody>
                 {rows.map((it) => {
-                  const rem = remainingText(it.expire_at)
+                  const rem = remainingText(it.expire_at, it.status)
                   return (
                     <tr key={it.id}>
                       <td>
@@ -356,46 +359,33 @@ export default function Reminders({
                         {it.reminder?.last_offset_fired || '—'}
                       </td>
                       <td className="w-px whitespace-nowrap">
-                        <div className="flex justify-end gap-1">
-                          <button className="btn-ghost h-8 w-8 px-0" title="Detail" onClick={() => setDetailID(it.id)}>
-                            <span className="material-symbols-outlined text-[18px]">open_in_new</span>
-                          </button>
-                          {canWrite && (
-                            <>
-                              <button
-                                className="btn-ghost h-8 w-8 px-0 text-success"
-                                title="Tandai selesai (resolved)"
-                                disabled={resolvingID === it.id || it.status === 'resolved' || it.status === 'cancelled'}
-                                onClick={() => handleResolve(it)}
-                              >
-                                <span className={`material-symbols-outlined text-[18px] ${resolvingID === it.id ? 'animate-spin' : ''}`}>
-                                  {resolvingID === it.id ? 'progress_activity' : 'task_alt'}
-                                </span>
-                              </button>
-                              <button
-                                className="btn-ghost h-8 w-8 px-0"
-                                title="Kirim notifikasi sekarang"
-                                disabled={notifyingID === it.id}
-                                onClick={() => handleNotify(it)}
-                              >
-                                <span className={`material-symbols-outlined text-[18px] ${notifyingID === it.id ? 'animate-spin' : ''}`}>
-                                  {notifyingID === it.id ? 'progress_activity' : 'send'}
-                                </span>
-                              </button>
-                              <button className="btn-ghost h-8 w-8 px-0" title="Edit" onClick={() => setEditing(it)}>
-                                <span className="material-symbols-outlined text-[18px]">edit</span>
-                              </button>
-                              {canManage(it) && (
-                                <button
-                                  className="btn-ghost h-8 w-8 px-0 text-critical"
-                                  title="Hapus"
-                                  onClick={() => handleDelete(it)}
-                                >
-                                  <span className="material-symbols-outlined text-[18px]">delete</span>
-                                </button>
-                              )}
-                            </>
-                          )}
+                        <div className="flex justify-end">
+                          <ActionMenu
+                            items={[
+                              { label: 'Lihat detail', icon: 'open_in_new', onClick: () => setDetailID(it.id) },
+                              ...(canWrite
+                                ? [
+                                    {
+                                      label: 'Tandai selesai',
+                                      icon: resolvingID === it.id ? 'progress_activity' : 'task_alt',
+                                      tone: 'success' as const,
+                                      disabled: resolvingID === it.id || it.status === 'resolved' || it.status === 'cancelled',
+                                      onClick: () => handleResolve(it),
+                                    },
+                                    {
+                                      label: 'Kirim notifikasi',
+                                      icon: notifyingID === it.id ? 'progress_activity' : 'send',
+                                      disabled: notifyingID === it.id,
+                                      onClick: () => handleNotify(it),
+                                    },
+                                    { label: 'Edit reminder', icon: 'edit', onClick: () => setEditing(it) },
+                                  ]
+                                : []),
+                              ...(canWrite && canManage(it)
+                                ? [{ label: 'Hapus reminder', icon: 'delete', tone: 'danger' as const, onClick: () => handleDelete(it) }]
+                                : []),
+                            ]}
+                          />
                         </div>
                       </td>
                     </tr>
@@ -472,6 +462,32 @@ function toLocalInput(iso?: string): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+/** splitDateTime memisahkan ISO menjadi bagian tanggal (YYYY-MM-DD) dan jam 24h (HH:MM). */
+function splitDateTime(iso?: string): { date: string; time: string } {
+  const local = toLocalInput(iso) // "YYYY-MM-DDTHH:MM"
+  if (!local) return { date: '', time: '' }
+  const [date, time] = local.split('T')
+  return { date: date ?? '', time: time ?? '' }
+}
+
+/** defaultExpire mengembalikan tanggal & jam default (24 jam dari sekarang), format 24 jam. */
+function defaultExpire(): { date: string; time: string } {
+  const d = new Date(Date.now() + 24 * 3_600_000)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return {
+    date: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`,
+    time: `${pad(d.getHours())}:${pad(d.getMinutes())}`,
+  }
+}
+
+/** combineDateTime menggabungkan tanggal + jam (24 jam) menjadi ISO string. */
+function combineDateTime(date: string, time: string): string {
+  if (!date) return ''
+  const iso = new Date(`${date}T${time || '00:00'}`)
+  if (Number.isNaN(iso.getTime())) return ''
+  return iso.toISOString()
+}
+
 export function ReminderForm({
   entry,
   onClose,
@@ -496,9 +512,11 @@ export function ReminderForm({
   const [deviceRef, setDeviceRef] = useState(entry?.device_ref ?? '')
   const [targetId, setTargetId] = useState(entry?.target_id ?? '')
   const [policyId, setPolicyId] = useState(entry?.reminder?.escalation_policy_id ?? '')
-  // Mode buat memakai durasi; mode edit memakai waktu expire absolut.
-  const [expireLocal, setExpireLocal] = useState(toLocalInput(entry?.expire_at))
-  const [hours, setHours] = useState(24)
+  // Tanggal & jam expire memakai picker kalender + jam (format 24 jam).
+  const initialExpire = splitDateTime(entry?.expire_at)
+  const fallbackExpire = defaultExpire()
+  const [expireDate, setExpireDate] = useState(initialExpire.date || fallbackExpire.date)
+  const [expireTime, setExpireTime] = useState(initialExpire.time || fallbackExpire.time)
   const [busy, setBusy] = useState(false)
 
   // Pilih policy default saat data policies tersedia.
@@ -508,6 +526,11 @@ export function ReminderForm({
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
+    const expireAt = combineDateTime(expireDate, expireTime)
+    if (!expireAt) {
+      onError('Tanggal & jam expire wajib diisi')
+      return
+    }
     setBusy(true)
     try {
       if (isEdit && entry) {
@@ -517,7 +540,7 @@ export function ReminderForm({
           owner_username: owner,
           device_ref: deviceRef,
           target_id: targetId || '',
-          expire_at: expireLocal ? new Date(expireLocal).toISOString() : '',
+          expire_at: expireAt,
           reminder: {
             category,
             subject_name: subjectName,
@@ -526,7 +549,6 @@ export function ReminderForm({
           },
         })
       } else {
-        const expireAt = new Date(Date.now() + hours * 3_600_000).toISOString()
         await workItemsApi.create({
           item_type: 'reminder',
           title: title || `Reminder — ${subjectName}`,
@@ -624,50 +646,67 @@ export function ReminderForm({
               <option value="custom">Custom</option>
             </select>
           </div>
-          <div>
-            <label className="label-field" htmlFor="rm-hours">
-              {isEdit ? 'Expire (waktu setempat)' : 'Durasi (jam)'}
-            </label>
-            {isEdit ? (
-              <input
-                id="rm-hours"
-                type="datetime-local"
-                className="input mono"
-                value={expireLocal}
-                onChange={(e) => setExpireLocal(e.target.value)}
-              />
-            ) : (
-              <input
-                id="rm-hours"
-                type="number"
-                min={1}
-                max={8760}
-                className="input mono"
-                value={hours}
-                onChange={(e) => setHours(Number(e.target.value) || 1)}
-              />
-            )}
-            <p className="mt-1 text-label-sm text-text-secondary">
-              Expire:{' '}
-              {formatWIB(
-                isEdit && expireLocal
-                  ? new Date(expireLocal).toISOString()
-                  : new Date(Date.now() + hours * 3_600_000).toISOString(),
-              )}
-            </p>
+          <div className="sm:col-span-2">
+            <div className="label-field">Tanggal &amp; jam expire (WIB · 24 jam)</div>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <div>
+                <label className="label-field" htmlFor="rm-date">
+                  Tanggal
+                </label>
+                <input
+                  id="rm-date"
+                  type="date"
+                  className="input mono"
+                  value={expireDate}
+                  onChange={(e) => setExpireDate(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="label-field" htmlFor="rm-time">
+                  Jam
+                </label>
+                <input
+                  id="rm-time"
+                  type="time"
+                  step={60}
+                  className="input mono"
+                  value={expireTime}
+                  onChange={(e) => setExpireTime(e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="mt-1 flex flex-wrap items-center gap-2">
+              <p className="text-label-sm text-text-secondary">
+                Expire:{' '}
+                <span className="mono">{formatWIB(combineDateTime(expireDate, expireTime) || undefined)}</span>
+              </p>
+              <button
+                type="button"
+                className="btn-ghost h-7 px-2 text-label-sm"
+                onClick={() => {
+                  const q = defaultExpire()
+                  setExpireDate(q.date)
+                  setExpireTime(q.time)
+                }}
+              >
+                <span className="material-symbols-outlined text-[15px]">schedule</span>
+                +24 jam
+              </button>
+            </div>
           </div>
-          <div>
-            <label className="label-field" htmlFor="rm-device">
-              Perangkat
-            </label>
-            <input
-              id="rm-device"
-              className="input mono"
-              value={deviceRef}
-              onChange={(e) => setDeviceRef(e.target.value)}
-              placeholder="opsional"
-            />
-          </div>
+        </div>
+
+        <div>
+          <label className="label-field" htmlFor="rm-device">
+            Perangkat
+          </label>
+          <input
+            id="rm-device"
+            className="input mono"
+            value={deviceRef}
+            onChange={(e) => setDeviceRef(e.target.value)}
+            placeholder="opsional"
+          />
         </div>
 
         <div className="grid gap-3.5 sm:grid-cols-2">

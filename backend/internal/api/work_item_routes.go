@@ -163,6 +163,18 @@ func (s *Server) handleListWorkItems(w http.ResponseWriter, r *http.Request) {
 		Limit:    50,
 	}
 
+	if v := strings.TrimSpace(q.Get("sla_state")); v != "" {
+		params.SLAState = v
+	}
+	// status_in memungkinkan filter beberapa status sekaligus (dipakai kartu
+	// statistik: new,assigned / in_progress,pending_customer / dst).
+	if v := strings.TrimSpace(q.Get("status_in")); v != "" {
+		for _, st := range strings.Split(v, ",") {
+			if st = strings.TrimSpace(st); st != "" {
+				params.StatusIn = append(params.StatusIn, st)
+			}
+		}
+	}
 	if raw := q.Get("team_id"); raw != "" {
 		id, err := uuid.Parse(raw)
 		if err != nil {
@@ -728,7 +740,7 @@ func (s *Server) handleUpdateWorkItem(w http.ResponseWriter, r *http.Request) {
 	// pembuat/owner item atau admin. Field operasional lain (prioritas, owner,
 	// tenggat, tag, dsb.) tetap dapat diubah oleh operator.
 	if (req.Description != nil || req.RFS != nil || req.Task != nil || req.Ticket != nil || req.Reminder != nil) &&
-		!s.canWriteItemTeam(r, userFrom(r), item) {
+		!s.canJoinItemTeam(r, userFrom(r), item) {
 		writeErr(w, http.StatusForbidden, "hanya pembuat item atau admin yang dapat mengubah deskripsi/detail")
 		return
 	}
@@ -987,7 +999,8 @@ func (s *Server) handleChangeStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// F31: task & daily_task hanya dapat diubah oleh tim yang sama.
-	if !s.canWriteItemTeam(r, userFrom(r), item) {
+	// Tiket/RFS: anggota tim pembuat juga boleh ikut menangani.
+	if !s.canJoinItemTeam(r, userFrom(r), item) {
 		writeErr(w, http.StatusForbidden, "tidak berhak mengubah item ini")
 		return
 	}

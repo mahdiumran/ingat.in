@@ -35,13 +35,14 @@ func BuildDailySummary(dayLabel string, g SummaryGroup) (description, notes stri
 		dayLabel, len(g.Pending)+len(g.Waiting), len(g.InProgress), len(g.Done))
 
 	var b strings.Builder
-	writeGroup := func(title string, items []SummaryTask) {
+	writeGroup := func(title, symbol string, items []SummaryTask) {
 		b.WriteString("— " + title + " (" + itoa(len(items)) + ") —\n")
 		if len(items) == 0 {
 			b.WriteString("(tidak ada)\n")
 		}
 		for _, it := range items {
-			line := fmt.Sprintf("• %s %s", it.RefNo, it.Title)
+			// Simbol status diletakkan tepat setelah deskripsi (judul) tugas.
+			line := fmt.Sprintf("• %s %s %s", it.RefNo, it.Title, symbol)
 			if it.Owner != "" {
 				line += " — " + it.Owner
 			}
@@ -52,10 +53,10 @@ func BuildDailySummary(dayLabel string, g SummaryGroup) (description, notes stri
 		}
 		b.WriteString("\n")
 	}
-	writeGroup("Belum selesai", g.Pending)
-	writeGroup("Sedang dikerjakan", g.InProgress)
-	writeGroup("Menunggu Konfirmasi Pelanggan", g.Waiting)
-	writeGroup("Selesai", g.Done)
+	writeGroup("Belum selesai", "🔴", g.Pending)
+	writeGroup("Sedang dikerjakan", "🟡", g.InProgress)
+	writeGroup("Menunggu Konfirmasi Pelanggan", "❓", g.Waiting)
+	writeGroup("Selesai", "✅", g.Done)
 	notes = strings.TrimSpace(b.String())
 	return description, notes
 }

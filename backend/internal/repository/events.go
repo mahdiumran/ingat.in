@@ -387,15 +387,15 @@ func (s *Store) DashboardSummary(ctx context.Context, scope *DashboardScope) (*D
 	row := s.pool.QueryRow(ctx, `
 		SELECT
 		  count(*) FILTER (WHERE due_at IS NOT NULL AND due_at < now()
-		                     AND status NOT IN ('done','cancelled','closed','activated','expired','fulfilled'))            AS overdue,
+		                     AND status NOT IN ('done','cancelled','closed','activated','expired','fulfilled','resolved'))            AS overdue,
 		  count(*) FILTER (WHERE due_at IS NOT NULL
 		                     AND due_at::date = (now() AT TIME ZONE 'Asia/Jakarta')::date
-		                     AND status NOT IN ('done','cancelled','closed','activated','expired','fulfilled'))            AS due_today,
+		                     AND status NOT IN ('done','cancelled','closed','activated','expired','fulfilled','resolved'))            AS due_today,
 		  count(*) FILTER (WHERE expire_at IS NOT NULL
 		                     AND expire_at > now() AND expire_at <= now() + interval '24 hours'
-		                     AND status NOT IN ('done','cancelled','closed','activated','expired','fulfilled'))            AS expiring_soon,
+		                     AND status NOT IN ('done','cancelled','closed','activated','expired','fulfilled','resolved'))            AS expiring_soon,
 		  count(*) FILTER (WHERE expire_at IS NOT NULL AND expire_at <= now()
-		                     AND status NOT IN ('done','cancelled','closed','activated','expired','fulfilled'))            AS expired,
+		                     AND status NOT IN ('done','cancelled','closed','activated','expired','fulfilled','resolved'))            AS expired,
 		  count(*) FILTER (WHERE item_type='rfs'
 		                     AND expire_at IS NOT NULL AND expire_at > now()
 		                     AND expire_at <= now() + interval '7 days'
@@ -425,7 +425,7 @@ func (s *Store) DashboardSummary(ctx context.Context, scope *DashboardScope) (*D
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+workItemColumns+` FROM work_items
 		WHERE NOT is_deleted
-		  AND status NOT IN ('done','cancelled','closed','activated','expired','fulfilled')
+		  AND status NOT IN ('done','cancelled','closed','activated','expired','fulfilled','resolved')
 		  AND (due_at IS NOT NULL OR expire_at IS NOT NULL)`+scopeSQL2+`
 		ORDER BY LEAST(COALESCE(due_at, 'infinity'::timestamptz), COALESCE(expire_at, 'infinity'::timestamptz))
 		LIMIT 7`, args2...)

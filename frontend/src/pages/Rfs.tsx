@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { ApiUser, api, MasterDataEntry, masterDataApi, notificationApi, workItemsApi } from '../api'
+import { ApiUser, api, MasterDataEntry, masterDataApi, workItemsApi } from '../api'
 import {
+  ActionMenu,
   ConfirmDialog,
   EmptyState,
   ErrorState,
@@ -27,30 +28,15 @@ type ConfirmState = {
   run: () => Promise<void>
 }
 
-/** Preset tag Aktivasi/EWO (kode sinkron dengan master data tag_color). */
-const EWO_TAG_PRESETS = ['change_service', 'upgrade', 'new_install', 'request', 'urgent']
-
-/** labelTag memberi label manusiawi untuk preset tag. */
-function labelTag(code: string): string {
-  switch (code) {
-    case 'change_service':
-      return 'Change Service'
-    case 'upgrade':
-      return 'Upgrade'
-    case 'new_install':
-      return 'New'
-    case 'request':
-      return 'Request'
-    case 'urgent':
-      return 'Urgent'
-    default:
-      return code
-  }
-}
-
-/** Hitung mundur ke tanggal RFS. */
-function countdown(rfsAt?: string): { text: string; tone: string } {
-  if (!rfsAt) return { text: '—', tone: 'text-text-secondary' }
+/** Hitung mundur ke tanggal RFS. Tidak berjalan lagi setelah ticket resolved
+ *  (status activated/cancelled maupun tahap instalasi activated/cancelled). */
+function countdown(rfsAt?: string, status?: string, installStage?: string): { text: string; tone: string } {
+  const isClosed =
+    status === 'activated' ||
+    status === 'cancelled' ||
+    installStage === 'activated' ||
+    installStage === 'cancelled'
+  if (!rfsAt || isClosed) return { text: '—', tone: 'text-text-secondary' }
   const ms = new Date(rfsAt).getTime() - Date.now()
   const late = ms < 0
   const abs = Math.abs(ms)
@@ -94,11 +80,13 @@ export default function Rfs({
   const [status, setStatus] = useState('')
   const [stage, setStage] = useState('')
   const [onlyNotActivated, setOnlyNotActivated] = useState(false)
+  const [bucket, setBucket] = useState<'' | 'soon' | 'overdue' | 'closed'>('')
   const [offset, setOffset] = useState(0)
   const [showCreate, setShowCreate] = useState(false)
   const [editItem, setEditItem] = useState<string | null>(null)
   const [detailID, setDetailID] = useState<string | null>(null)
   const [notifyingID, setNotifyingID] = useState<string | null>(null)
+  const [joiningID, setJoiningID] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<ConfirmState | null>(null)
   const [confirmBusy, setConfirmBusy] = useState(false)
   // F23: modal Troubleshoot (status + catatan penanganan).
@@ -163,11 +151,33 @@ export default function Rfs({
   )
 
   const all = items.data?.items ?? []
+  // Data tambahan (maks. 500) untuk statistik lintas halaman.
+  const statItems = useAsync(
+    () => workItemsApi.list({ type: 'rfs', limit: '500', order: 'expire_at', desc: 'false' }),
+    [items.data],
+  )
+  // RFS dianggap tertutup bila status ATAU tahap instalasinya activated/cancelled.
+  const isClosedStatus = (s: string) => s === 'activated' || s === 'cancelled'
+  const isClosedItem = (i: { status: string; rfs?: { install_stage?: string } }) =>
+    isClosedStatus(i.status) ||
+    i.rfs?.install_stage === 'activated' ||
+    i.rfs?.install_stage === 'cancelled'
+  // Completed/closed = activated, baik dari status maupun tahap instalasi.
+  const isCompletedRFS = (i: { status: string; rfs?: { install_stage?: string } }) =>
+    i.status === 'activated' || i.rfs?.install_stage === 'activated'
+
   const rows = all.filter((i) => {
     if (stage && i.rfs?.install_stage !== stage) return false
-    if (onlyNotActivated && (i.rfs?.install_stage === 'activated' || i.status === 'cancelled' || i.status === 'activated')) {
-      return false
+    if (onlyNotActivated && isClosedItem(i)) return false
+    if (bucket === 'soon') {
+      if (!i.expire_at || isClosedItem(i)) return false
+      const diff = new Date(i.expire_at).getTime() - Date.now()
+      if (diff < 0 || diff > 7 * 86_400_000) return false
     }
+    if (bucket === 'overdue') {
+      if (!i.expire_at || isClosedItem(i) || new Date(i.expire_at).getTime() >= Date.now()) return false
+    }
+    if (bucket === 'closed' && !isCompletedRFS(i)) return false
     return true
   })
   const total = items.data?.total ?? 0
@@ -175,15 +185,17 @@ export default function Rfs({
   const page = Math.floor(offset / limit) + 1
   const maxPage = Math.max(1, Math.ceil(total / limit))
 
-  const isClosed = (s: string) => s === 'activated' || s === 'cancelled'
-  const soon = all.filter((i) => {
-    if (!i.expire_at || isClosed(i.status)) return false
+  // Statistik dihitung dari seluruh RFS (bukan hanya halaman yang tampil),
+  // agar angka "7 hari", "Terlewat", dan "Closed" tetap akurat.
+  const statAll = statItems.data?.items ?? all
+  const soon = statAll.filter((i) => {
+    if (!i.expire_at || isClosedItem(i)) return false
     const diff = new Date(i.expire_at).getTime() - Date.now()
     return diff >= 0 && diff <= 7 * 86_400_000
   }).length
 
-  const overdue = all.filter((i) => {
-    if (!i.expire_at || isClosed(i.status)) return false
+  const overdue = statAll.filter((i) => {
+    if (!i.expire_at || isClosedItem(i)) return false
     return new Date(i.expire_at).getTime() < Date.now()
   }).length
 
@@ -198,6 +210,29 @@ export default function Rfs({
       toast('error', 'Gagal mengirim notifikasi', err instanceof Error ? err.message : undefined)
     } finally {
       setNotifyingID(null)
+    }
+  }
+
+  async function handleJoinRFS(id: string, refNo: string, ownerUsername?: string) {
+    if (!user?.username) return
+    setJoiningID(id)
+    try {
+      if (!ownerUsername) {
+        await workItemsApi.assign(id, user.username)
+        toast('success', 'RFS mulai dikerjakan', `${refNo} ditetapkan kepada ${user.username}`)
+      } else {
+        const result = await workItemsApi.addCollaborator(id, user.username)
+        toast(
+          result.inserted ? 'success' : 'info',
+          result.inserted ? 'Berhasil mengikuti RFS' : 'Sudah mengikuti RFS',
+          refNo,
+        )
+      }
+      items.reload()
+    } catch (err) {
+      toast('error', 'Gagal mengikuti RFS', err instanceof Error ? err.message : undefined)
+    } finally {
+      setJoiningID(null)
     }
   }
 
@@ -290,14 +325,10 @@ export default function Rfs({
 
       {/* Ringkasan */}
       <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <MiniCard label="Total" value={total} tone="bg-surface-container text-text-secondary border-outline-variant" />
-        <MiniCard label="7 hari ke depan" value={soon} tone="bg-warning-container text-on-warning-container border-outline-variant" />
-        <MiniCard label="Terlewat" value={overdue} tone={overdue > 0 ? 'bg-critical-container text-on-critical-container border-critical' : 'bg-surface-container text-text-secondary border-outline-variant'} />
-        <MiniCard
-          label="Closed / Completed"
-          value={all.filter((i) => i.rfs?.install_stage === 'activated').length}
-          tone="bg-success-container text-on-success-container border-outline-variant"
-        />
+        <StatFilterCard label="Total" value={total} tone="bg-surface-container text-text-secondary border-outline-variant" active={!bucket} onClick={() => { setStatus(''); setOnlyNotActivated(false); setStage(''); setBucket(''); setOffset(0) }} />
+        <StatFilterCard label="7 hari ke depan" value={soon} tone="bg-warning-container text-on-warning-container border-outline-variant" active={bucket === 'soon'} onClick={() => { setStatus(''); setBucket(bucket === 'soon' ? '' : 'soon'); setOffset(0) }} />
+        <StatFilterCard label="Terlewat" value={overdue} tone={overdue > 0 ? 'bg-critical-container text-on-critical-container border-critical' : 'bg-surface-container text-text-secondary border-outline-variant'} active={bucket === 'overdue'} onClick={() => { setBucket(bucket === 'overdue' ? '' : 'overdue'); setOffset(0) }} />
+        <StatFilterCard label="Closed / Completed" value={statAll.filter(isCompletedRFS).length} tone="bg-success-container text-on-success-container border-outline-variant" active={bucket === 'closed'} onClick={() => { const on = bucket !== 'closed'; setBucket(on ? 'closed' : ''); setStatus(on ? 'activated' : ''); setOffset(0) }} />
       </div>
 
       {/* Filter */}
@@ -425,9 +456,9 @@ export default function Rfs({
               </thead>
               <tbody>
                 {rows.map((it) => {
-                  const cd = countdown(it.expire_at)
+                  const cd = countdown(it.expire_at, it.status, it.rfs?.install_stage)
                   const rfs = it.rfs
-                  const closed = isClosed(it.status)
+                  const closed = isClosedItem(it)
                   const busy = busyID === it.id
                   return (
                     <tr key={it.id}>
@@ -440,7 +471,7 @@ export default function Rfs({
                         <button className="block truncate text-left font-medium hover:underline" onClick={() => setDetailID(it.id)}>
                           {rfs?.customer_name || it.title}
                         </button>
-                        {it.device_ref && <span className="mono text-label-sm text-text-secondary">{it.device_ref}</span>}
+                        
                       </td>
                       <td>
                         <div className="text-body-sm">{rfs?.service_package || '—'}</div>
@@ -458,89 +489,46 @@ export default function Rfs({
                         <TagList tags={it.tags} colors={tagColors} />
                       </td>
                       <td className="w-px whitespace-nowrap">
-                        <div className="flex justify-end gap-1">
-                          {canWrite && !closed && it.status !== 'in_progress' && (
-                            <button
-                              className="btn-ghost h-8 px-1.5 text-label-sm"
-                              title="Tandai sedang dikerjakan"
-                              disabled={busy}
-                              onClick={() => changeStatus(it.id, it.ref_no, 'in_progress', 'In Progress')}
-                            >
-                              <span className="material-symbols-outlined text-[16px]">play_arrow</span>
-                              In Progress
-                            </button>
-                          )}
+                        <div className="flex justify-end gap-2">
                           {canWrite && !closed && (
                             <button
-                              className="btn-ghost h-8 px-1.5 text-label-sm text-warning"
-                              title="Tandai pending troubleshoot + catatan penanganan"
-                              disabled={busy}
-                              onClick={() => setTroubleTarget({ id: it.id, refNo: it.ref_no })}
+                              className="btn-primary h-8 px-2 text-label-sm"
+                              disabled={joiningID === it.id}
+                              onClick={() => handleJoinRFS(it.id, it.ref_no, it.owner_username)}
+                              title={it.owner_username ? 'Ikuti RFS sebagai penangan tambahan' : 'Ambil dan kerjakan RFS'}
                             >
-                              <span className="material-symbols-outlined text-[16px]">handyman</span>
-                              Troubleshoot
-                            </button>
-                          )}
-                          {canWrite && !closed && (
-                            <button
-                              className="btn-ghost h-8 px-1.5 text-label-sm"
-                              title="Tunda (postpone)"
-                              disabled={busy}
-                              onClick={() => changeStatus(it.id, it.ref_no, 'postponed', 'Postpone')}
-                            >
-                              <span className="material-symbols-outlined text-[16px]">schedule</span>
-                              Postpone
-                            </button>
-                          )}
-                          {canWrite && !closed && (
-                            <button
-                              className="btn-ghost h-8 px-1.5 text-label-sm text-success"
-                              title="Close ticket (aktifkan)"
-                              disabled={busy}
-                              onClick={() => markActivated(it.id, it.ref_no)}
-                            >
-                              <span className="material-symbols-outlined text-[16px]">task_alt</span>
-                              Close
-                            </button>
-                          )}
-                          {canManage(it) && (
-                            <button className="btn-ghost h-8 w-8 px-0" title="Ubah" onClick={() => setEditItem(it.id)}>
-                              <span className="material-symbols-outlined text-[18px]">edit</span>
-                            </button>
-                          )}
-                          {canWrite && (
-                            <button
-                              className="btn-ghost h-8 w-8 px-0"
-                              title="Kirim notifikasi sekarang"
-                              disabled={notifyingID === it.id}
-                              onClick={() => handleNotify(it.id, it.ref_no)}
-                            >
-                              <span className={`material-symbols-outlined text-[18px] ${notifyingID === it.id ? 'animate-spin' : ''}`}>
-                                {notifyingID === it.id ? 'progress_activity' : 'send'}
+                              <span className={`material-symbols-outlined text-[16px] ${joiningID === it.id ? 'animate-spin' : ''}`}>
+                                {joiningID === it.id ? 'progress_activity' : it.owner_username ? 'group_add' : 'play_arrow'}
                               </span>
+                              {it.owner_username ? 'Ikuti RFS' : 'Kerjakan'}
                             </button>
                           )}
-                          {canWrite && !closed && canCancel(it) && (
-                            <button
-                              className="btn-ghost h-8 w-8 px-0 text-warning"
-                              title="Batalkan RFS"
-                              onClick={() => openCancel(it.id, it.ref_no)}
-                            >
-                              <span className="material-symbols-outlined text-[18px]">cancel</span>
-                            </button>
-                          )}
-                          {canWrite && canManage(it) && (
-                            <button
-                              className="btn-ghost h-8 w-8 px-0 text-critical"
-                              title="Hapus RFS (alasan wajib)"
-                              onClick={() => openDelete(it.id, it.ref_no)}
-                            >
-                              <span className="material-symbols-outlined text-[18px]">delete</span>
-                            </button>
-                          )}
-                          <button className="btn-ghost h-8 w-8 px-0" title="Detail" onClick={() => setDetailID(it.id)}>
-                            <span className="material-symbols-outlined text-[18px]">open_in_new</span>
-                          </button>
+                          <ActionMenu
+                            label="Penanganan"
+                            items={[
+                              { label: 'Lihat detail', icon: 'open_in_new', onClick: () => setDetailID(it.id) },
+                              ...(canWrite && !closed && it.status !== 'in_progress'
+                                ? [{ label: 'In Progress', icon: 'play_arrow', disabled: busy, onClick: () => changeStatus(it.id, it.ref_no, 'in_progress', 'In Progress') }]
+                                : []),
+                              ...(canWrite && !closed
+                                ? [
+                                    { label: 'Troubleshoot', icon: 'handyman', tone: 'warning' as const, disabled: busy, onClick: () => setTroubleTarget({ id: it.id, refNo: it.ref_no }) },
+                                    { label: 'Postpone', icon: 'schedule', disabled: busy, onClick: () => changeStatus(it.id, it.ref_no, 'postponed', 'Postpone') },
+                                    { label: 'Close ticket', icon: 'task_alt', tone: 'success' as const, disabled: busy, onClick: () => markActivated(it.id, it.ref_no) },
+                                  ]
+                                : []),
+                              ...(canManage(it) ? [{ label: 'Ubah RFS', icon: 'edit', onClick: () => setEditItem(it.id) }] : []),
+                              ...(canWrite
+                                ? [{ label: 'Kirim notifikasi', icon: notifyingID === it.id ? 'progress_activity' : 'send', disabled: notifyingID === it.id, onClick: () => handleNotify(it.id, it.ref_no) }]
+                                : []),
+                              ...(canWrite && !closed && canCancel(it)
+                                ? [{ label: 'Batalkan RFS', icon: 'cancel', tone: 'warning' as const, onClick: () => openCancel(it.id, it.ref_no) }]
+                                : []),
+                              ...(canWrite && canManage(it)
+                                ? [{ label: 'Hapus RFS', icon: 'delete', tone: 'danger' as const, onClick: () => openDelete(it.id, it.ref_no) }]
+                                : []),
+                            ]}
+                          />
                         </div>
                       </td>
                     </tr>
@@ -667,15 +655,35 @@ function PriorityPill({ priority }: { priority: string }) {
   return <span className={`badge ${tone}`}>{priority}</span>
 }
 
-function MiniCard({ label, value, tone }: { label: string; value: number; tone: string }) {
+/** StatFilterCard — kartu ringkasan yang dapat diklik untuk memfilter daftar. */
+function StatFilterCard({
+  label,
+  value,
+  tone,
+  active,
+  onClick,
+}: {
+  label: string
+  value: number
+  tone: string
+  active: boolean
+  onClick: () => void
+}) {
   return (
-    <div className="card px-4 py-3">
+    <button
+      type="button"
+      onClick={onClick}
+      className={`card px-4 py-3 text-left transition hover:bg-surface-container-low/70 ${
+        active ? 'ring-2 ring-primary' : ''
+      }`}
+      aria-pressed={active}
+    >
       <div className="kicker">{label}</div>
       <div className="mt-0.5 flex items-center gap-2">
         <span className="font-headline text-xl font-semibold">{value}</span>
         <span className={`badge ${tone}`} aria-hidden />
       </div>
-    </div>
+    </button>
   )
 }
 
@@ -872,7 +880,6 @@ export function RFSForm({
   onSaved: () => void
   onError: (msg: string) => void
 }) {
-  const targets = useAsync(() => notificationApi.targetOptions(), [])
   const packages = useAsync(() => masterDataApi.list({ kind: 'service_package', active: 'true' }), [])
   const teams = useAsync(() => api.teams(), [])
   const existing = useAsync(
@@ -887,16 +894,8 @@ export function RFSForm({
   const [servicePackage, setServicePackage] = useState('')
   const [priority, setPriority] = useState('normal')
   const [bandwidth, setBandwidth] = useState('')
-  const [serviceID, setServiceID] = useState('')
-  const [site, setSite] = useState('')
   const [picTeamID, setPicTeamID] = useState('')
-  const [picSales, setPicSales] = useState('')
-  const [deviceRef, setDeviceRef] = useState('')
-  const [installStage, setInstallStage] = useState('planned')
   const [rfsDate, setRfsDate] = useState('')
-  const [targetId, setTargetId] = useState('')
-  const [notes, setNotes] = useState('')
-  const [tags, setTags] = useState<string[]>([])
   const [initialised, setInitialised] = useState(false)
   const [busy, setBusy] = useState(false)
 
@@ -908,14 +907,7 @@ export function RFSForm({
     setServicePackage(rfs?.service_package ?? '')
     setPriority(item.priority ?? 'normal')
     setBandwidth(rfs?.bandwidth ?? '')
-    setServiceID(rfs?.service_id ?? '')
-    setSite(rfs?.site ?? '')
     setPicTeamID(rfs?.pic_team_id ?? '')
-    setPicSales(rfs?.pic_sales ?? '')
-    setDeviceRef(item.device_ref ?? '')
-    setInstallStage(rfs?.install_stage ?? 'planned')
-    setNotes(item.description ?? '')
-    setTags(item.tags ?? [])
     if (item.expire_at) {
       const d = new Date(item.expire_at)
       const pad = (n: number) => String(n).padStart(2, '0')
@@ -924,10 +916,6 @@ export function RFSForm({
       )
     }
     setInitialised(true)
-  }
-
-  function toggleTag(code: string) {
-    setTags((prev) => (prev.includes(code) ? prev.filter((t) => t !== code) : [...prev, code]))
   }
 
   async function submit(e: React.FormEvent) {
@@ -941,20 +929,13 @@ export function RFSForm({
       const expireAt = new Date(rfsDate).toISOString()
       const payload = {
         title: `Aktivasi/EWO — ${customerName}`,
-        description: notes,
         priority,
         expire_at: expireAt,
-        device_ref: deviceRef,
-        tags,
         rfs: {
           customer_name: customerName,
-          service_id: serviceID,
           service_package: servicePackage,
           bandwidth,
           pic_team_id: picTeamID || undefined,
-          pic_sales: picSales,
-          site,
-          install_stage: installStage,
         },
       }
 
@@ -965,7 +946,6 @@ export function RFSForm({
           ...payload,
           item_type: 'rfs',
           status: 'planned',
-          target_id: targetId || undefined,
         })
       }
       onSaved()
@@ -1074,136 +1054,28 @@ export function RFSForm({
               Pengingat dikirim H-7, H-3, H-1, dan H-0 sebelum waktu ini.
             </p>
           </div>
-          <div>
-            <label className="label-field" htmlFor="rf-serviceid">
-              Service ID
-            </label>
-            <input
-              id="rf-serviceid"
-              className="input mono"
-              value={serviceID}
-              onChange={(e) => setServiceID(e.target.value)}
-              placeholder="opsional"
-            />
-          </div>
         </div>
 
         <div>
-          <div className="label-field">Tag (opsional)</div>
-          <div className="flex flex-wrap gap-1.5">
-            {EWO_TAG_PRESETS.map((code) => {
-              const on = tags.includes(code)
-              return (
-                <button
-                  key={code}
-                  type="button"
-                  onClick={() => toggleTag(code)}
-                  className={`badge border transition ${
-                    on
-                      ? 'border-primary bg-primary-container text-on-primary-container'
-                      : 'border-outline-variant bg-surface-container text-text-secondary'
-                  }`}
-                >
-                  {labelTag(code)}
-                </button>
-              )
-            })}
-          </div>
-          <p className="mt-1 text-label-sm text-text-secondary">
-            Preset: Change Service, Upgrade, New, Request, Urgent.
-          </p>
-        </div>
-
-        <div className="grid gap-3.5 sm:grid-cols-2">
-          <div>
-            <label className="label-field" htmlFor="rf-stage">
-              Tahap instalasi
-            </label>
-            <select id="rf-stage" className="input" value={installStage} onChange={(e) => setInstallStage(e.target.value)}>
-              <option value="planned">Planned</option>
-              <option value="provisioning">Provisioning</option>
-              <option value="delivered">Delivered</option>
-              <option value="activated">Activated</option>
-              <option value="postponed">Postponed</option>
-              <option value="cancelled">Cancelled</option>
-            </select>
-          </div>
-          <div>
-            <label className="label-field" htmlFor="rf-site">
-              Site / lokasi
-            </label>
-            <input id="rf-site" className="input" value={site} onChange={(e) => setSite(e.target.value)} placeholder="CGK-1" />
-          </div>
-        </div>
-
-        <div className="grid gap-3.5 sm:grid-cols-2">
-          <div>
-            <label className="label-field" htmlFor="rf-picteam">
-              PIC Team
-            </label>
-            <select
-              id="rf-picteam"
-              className="input"
-              value={picTeamID}
-              onChange={(e) => setPicTeamID(e.target.value)}
-            >
-              <option value="">— Pilih PIC Team —</option>
-              {(teams.data?.teams ?? []).map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="label-field" htmlFor="rf-picsales">
-              PIC Sales
-            </label>
-            <input id="rf-picsales" className="input" value={picSales} onChange={(e) => setPicSales(e.target.value)} placeholder="Sari" />
-          </div>
-        </div>
-
-        <div className="grid gap-3.5 sm:grid-cols-2">
-          <div>
-            <label className="label-field" htmlFor="rf-device">
-              Perangkat (referensi)
-            </label>
-            <input
-              id="rf-device"
-              className="input mono"
-              value={deviceRef}
-              onChange={(e) => setDeviceRef(e.target.value)}
-              placeholder="MX204-CGK1"
-            />
-          </div>
-          {!editId && (
-            <div>
-              <label className="label-field" htmlFor="rf-target">
-                Target notifikasi
-              </label>
-              <select id="rf-target" className="input" value={targetId} onChange={(e) => setTargetId(e.target.value)}>
-                <option value="">— Default sistem (NOC-Team) —</option>
-                {(targets.data?.targets ?? []).map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-        </div>
-
-        <div>
-          <label className="label-field" htmlFor="rf-notes">
-            Catatan
+          <label className="label-field" htmlFor="rf-picteam">
+            PIC Team
           </label>
-          <textarea
-            id="rf-notes"
-            className="input h-16 py-2"
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            placeholder="Detail teknis, kebutuhan khusus, dsb."
-          />
+          <select
+            id="rf-picteam"
+            className="input"
+            value={picTeamID}
+            onChange={(e) => setPicTeamID(e.target.value)}
+          >
+            <option value="">— Pilih PIC Team —</option>
+            {(teams.data?.teams ?? []).map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1 text-label-sm text-text-secondary">
+            Target notifikasi otomatis mengikuti tim PIC yang dipilih.
+          </p>
         </div>
       </form>
     </Modal>

@@ -27,6 +27,33 @@ func isTeamScopedType(itemType string) bool {
 	return itemType == models.ItemTask || itemType == models.ItemDailyTask
 }
 
+// canJoinItemTeam melaporkan apakah user boleh ikut menangani item (tiket/RFS).
+//
+// Aturan: admin/super selalu boleh. Untuk tipe tiket (incident/request/change)
+// dan rfs, user boleh bila timnya SAMA DENGAN TIM PEMBUAT item — karena work
+// item tiket/rfs tidak menyimpan team_id, tim efektif diturunkan dari tim
+// pembuat (created_by). Bila pembuat tidak ditemukan atau tidak punya tim,
+// fallback ke aturan lama (canManageItem).
+func (s *Server) canJoinItemTeam(r *http.Request, user *models.User, item *models.WorkItem) bool {
+	if user == nil || item == nil {
+		return false
+	}
+	if s.isSuper(r, user) {
+		return true
+	}
+	if canManageItem(user, item) {
+		return true
+	}
+	switch item.ItemType {
+	case models.ItemIncident, models.ItemRequest, models.ItemChange, models.ItemRFS:
+		creator, err := s.store.GetUserByUsername(r.Context(), strings.TrimSpace(item.CreatedBy))
+		if err == nil && creator != nil && user.TeamID != nil && creator.TeamID != nil && *user.TeamID == *creator.TeamID {
+			return true
+		}
+	}
+	return false
+}
+
 // resolveTeamForCreate menentukan team_id saat membuat item ber-team (F31).
 //
 // Aturan:

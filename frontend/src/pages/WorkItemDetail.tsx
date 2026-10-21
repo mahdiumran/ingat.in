@@ -74,6 +74,7 @@ export function ItemDetail({
   const tagColors = useTagColors()
   // F25: daftar tim untuk pemilihan PIC team (Aktivasi/EWO).
   const teams = useAsync(() => api.teams(), [])
+  const users = useAsync(() => api.users(), [])
 
   const [tab, setTab] = useState<Tab>('ringkasan')
   const [comment, setComment] = useState('')
@@ -507,6 +508,17 @@ export function ItemDetail({
 
   const nextStates = item && workflow ? (workflow.transitions[item.status] ?? []) : []
   const isTicket = item?.item_type === 'incident' || item?.item_type === 'request' || item?.item_type === 'change'
+  const isOwner = !!user?.username && item?.owner_username?.toLowerCase() === user.username.toLowerCase()
+  const isCollaborator = !!user?.username && (item?.collaborators ?? []).some(
+    (c) => c.username.toLowerCase() === user.username?.toLowerCase(),
+  )
+  const isTerminalForFollow = item && (
+    (isTicket && (item.status === 'closed' || (item.item_type === 'request' && item.status === 'fulfilled') ||
+      (item.item_type === 'change' && ['completed', 'rolled_back', 'cancelled'].includes(item.status)))) ||
+    (item.item_type === 'rfs' && ['activated', 'cancelled'].includes(item.status)) ||
+    (item.item_type === 'reminder' && ['resolved', 'cancelled'].includes(item.status))
+  )
+  const reassignUser = (users.data?.users ?? []).find((u) => u.username === reassign?.username)
   /** canTransition melaporkan apakah transisi ke status tertentu diizinkan. */
   const canTransition = (target: string) => nextStates.includes(target)
 
@@ -1222,7 +1234,7 @@ export function ItemDetail({
             <div className="grid gap-5 lg:grid-cols-3">
               <div className="space-y-5 lg:col-span-2">
                 {/* F20: Penanggung jawab & penangan */}
-                {(isTicket || isRFS) && (
+                {(isTicket || isRFS || item.item_type === 'reminder') && (
                   <section className="card card-pad">
                     <h3 className="mb-3 font-headline text-lg font-semibold">Penanggung Jawab</h3>
 
@@ -1235,16 +1247,21 @@ export function ItemDetail({
                       ) : (
                         <span className="text-body-sm text-text-secondary">belum ditetapkan</span>
                       )}
-                      {/* F25: "Ikuti Tiket" (self-claim) untuk RFS/incident/request,
-                          hanya bila owner masih kosong. */}
-                      {canWrite &&
-                        !item.owner_username &&
-                        user?.username && (
+                      {canWrite && user?.username && !isTerminalForFollow && !isOwner && (
+                        item.owner_username ? (
+                          !isCollaborator && (
+                            <button className="btn-secondary h-8 px-3 text-label-sm" onClick={() => addCollaborator(user.username)} disabled={busy}>
+                              <span className="material-symbols-outlined text-[16px]">front_hand</span>
+                              Ikuti Tiket
+                            </button>
+                          )
+                        ) : (
                           <button className="btn-secondary h-8 px-3 text-label-sm" onClick={claimTicket} disabled={busy}>
                             <span className="material-symbols-outlined text-[16px]">front_hand</span>
-                            Ikuti Tiket
+                            Kerjakan
                           </button>
-                        )}
+                        )
+                      )}
                     </div>
 
                     {/* F25: owner lock — owner sudah terisi, hanya admin yang bisa ganti. */}
@@ -1258,15 +1275,24 @@ export function ItemDetail({
                       <div className="mt-3 flex flex-wrap items-end gap-2 border-t border-border pt-3">
                         <div className="min-w-[180px] flex-1">
                           <label className="label-field" htmlFor="assign-owner">
-                            {item.owner_username ? 'Force reassign owner (username)' : 'Tetapkan owner (username)'}
+                            {item.owner_username ? 'Force reassign owner' : 'Tetapkan owner'}
                           </label>
-                          <input
+                          <select
                             id="assign-owner"
-                            className="input mono"
+                            className="input"
                             value={assignInput}
                             onChange={(e) => setAssignInput(e.target.value)}
-                            placeholder="mis. epul"
-                          />
+                            disabled={busy || users.loading}
+                          >
+                            <option value="">— Pilih user —</option>
+                            {(users.data?.users ?? [])
+                              .filter((u) => u.is_active !== false)
+                              .map((u) => (
+                                <option key={u.id} value={u.username}>
+                                  {u.full_name ? `${u.username} — ${u.full_name}` : u.username}
+                                </option>
+                              ))}
+                          </select>
                         </div>
                         <button
                           className="btn-secondary"
@@ -1671,7 +1697,7 @@ export function ItemDetail({
           <div className="space-y-3.5">
             <p className="text-body-sm text-text-secondary">
               Mengganti penanggung jawab dari <span className="mono">{item?.owner_username}</span> ke{' '}
-              <span className="mono">{reassign.username}</span>. Alasan wajib diisi dan tercatat pada audit.
+              <span className="mono">{reassignUser?.full_name ? `${reassign.username} — ${reassignUser.full_name}` : reassign.username}</span>. Alasan wajib diisi dan tercatat pada audit.
             </p>
             <div>
               <label className="label-field" htmlFor="reassign-reason">
