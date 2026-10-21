@@ -1237,6 +1237,24 @@ export const attachmentsApi = {
     request<{ ok: boolean }>(`/attachments/${attachmentId}`, { method: 'DELETE' }),
 
   downloadUrl: (attachmentId: string) => `/api/attachments/${attachmentId}`,
+
+  /**
+   * previewUrl memuat berkas lampiran sebagai blob URL ber-auth sehingga dapat
+   * ditampilkan langsung (mis. <img src>). Endpoint unduh mewajibkan header
+   * Authorization, sedangkan <img>/<a href> tidak mengirimkannya.
+   * Pemanggil WAJIB melepas URL dengan URL.revokeObjectURL saat selesai.
+   */
+  previewUrl: async (attachmentId: string): Promise<string> => {
+    const token = getAccessToken()
+    const res = await fetch(`/api/attachments/${attachmentId}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    })
+    if (!res.ok) {
+      throw new Error(`Gagal memuat pratinjau (${res.status})`)
+    }
+    const blob = await res.blob()
+    return URL.createObjectURL(blob)
+  },
 }
 
 /* ------------------------------------------------------------------------- */

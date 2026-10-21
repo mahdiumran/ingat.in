@@ -61,6 +61,33 @@ func (s *Store) ListCollaborators(ctx context.Context, workItemID uuid.UUID) ([]
 	return out, rows.Err()
 }
 
+// ListCollaboratorsForItems mengambil penangan untuk sekumpulan work item
+// dalam satu query. Dipakai daftar (list) agar status "sudah mengikuti"
+// dapat dihitung tanpa N+1 query. ID yang tidak punya penangan tidak
+// muncul di peta hasil.
+func (s *Store) ListCollaboratorsForItems(ctx context.Context, workItemIDs []uuid.UUID) (map[uuid.UUID][]models.Collaborator, error) {
+	out := map[uuid.UUID][]models.Collaborator{}
+	if len(workItemIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, work_item_id, username, added_by, created_at
+		FROM ticket_collaborators WHERE work_item_id = ANY($1) ORDER BY created_at`, workItemIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var c models.Collaborator
+		if err := rows.Scan(&c.ID, &c.WorkItemID, &c.Username, &c.AddedBy, &c.CreatedAt); err != nil {
+			return nil, err
+		}
+		out[c.WorkItemID] = append(out[c.WorkItemID], c)
+	}
+	return out, rows.Err()
+}
+
 // IsCollaborator melaporkan apakah username termasuk penangan tiket.
 func (s *Store) IsCollaborator(ctx context.Context, workItemID uuid.UUID, username string) (bool, error) {
 	var n int

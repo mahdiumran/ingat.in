@@ -259,6 +259,27 @@ func (s *Server) handleListWorkItems(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
+	// Tandai penangan (collaborator) pada item tiket/RFS agar daftar dapat
+	// menyembunyikan tombol "Ikuti" bagi yang sudah menjadi penangan.
+	// Satu batch query untuk semua item (tanpa N+1).
+	ticketIDs := make([]uuid.UUID, 0, len(items))
+	for i := range items {
+		if items[i].IsTicket() || items[i].ItemType == models.ItemRFS {
+			ticketIDs = append(ticketIDs, items[i].ID)
+		}
+	}
+	if len(ticketIDs) > 0 {
+		if byItem, err := s.store.ListCollaboratorsForItems(r.Context(), ticketIDs); err == nil {
+			for i := range items {
+				if cols, ok := byItem[items[i].ID]; ok {
+					items[i].Collaborators = cols
+				}
+			}
+		} else {
+			writeInternalError(w, err)
+			return
+		}
+	}
 	// Lengkapi SLA turunan untuk tiket (durasi penanganan).
 	now := time.Now().UTC()
 	for i := range items {

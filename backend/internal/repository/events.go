@@ -257,8 +257,11 @@ type UpdateTicketDetailsParams struct {
 }
 
 // UpdateTicketDetails memperbarui ticket_details (dipakai mulai F10).
+//
+// Bila baris belum ada (tiket legacy), baris dibuat dulu dengan default
+// skema agar penyimpanan catatan penanganan tidak menjadi no-op yang senyap.
 func (s *Store) UpdateTicketDetails(ctx context.Context, tx pgx.Tx, workItemID uuid.UUID, p UpdateTicketDetailsParams) error {
-	_, err := tx.Exec(ctx, `
+	tag, err := tx.Exec(ctx, `
 		UPDATE ticket_details SET
 			category         = COALESCE($2, category),
 			subcategory      = COALESCE($3, subcategory),
@@ -272,6 +275,27 @@ func (s *Store) UpdateTicketDetails(ctx context.Context, tx pgx.Tx, workItemID u
 		WHERE work_item_id = $1`,
 		workItemID, p.Category, p.Subcategory, p.IncidentType, p.Impact, p.Urgency, p.AssignmentGroup,
 		p.IssueFound, p.Troubleshooting, p.ActionSolution)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() > 0 {
+		return nil
+	}
+	strOr := func(v *string, def string) string {
+		if v == nil {
+			return def
+		}
+		return *v
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO ticket_details
+			(work_item_id, category, subcategory, incident_type, impact, urgency,
+			 assignment_group, issue_found, troubleshooting, action_solution)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+		ON CONFLICT (work_item_id) DO NOTHING`,
+		workItemID, strOr(p.Category, ""), strOr(p.Subcategory, ""), strOr(p.IncidentType, ""),
+		strOr(p.Impact, "medium"), strOr(p.Urgency, "medium"), strOr(p.AssignmentGroup, ""),
+		strOr(p.IssueFound, ""), strOr(p.Troubleshooting, ""), strOr(p.ActionSolution, ""))
 	return err
 }
 

@@ -201,6 +201,15 @@ export default function Tickets({
   const page = Math.floor(offset / limit) + 1
   const maxPage = Math.max(1, Math.ceil(total / limit))
 
+  const myName = (user?.username ?? '').toLowerCase()
+
+  /** isHandledByMe: saya sudah owner atau sudah menjadi penangan tiket. */
+  function isHandledByMe(item: WorkItem): boolean {
+    if (!myName) return false
+    if (item.owner_username?.toLowerCase() === myName) return true
+    return (item.collaborators ?? []).some((c) => c.username.toLowerCase() === myName)
+  }
+
   function handleDelete(item: WorkItem) {
     setConfirm({
       title: 'Hapus tiket?',
@@ -524,7 +533,7 @@ export default function Tickets({
                     </td>
                     <td className="w-px whitespace-nowrap">
                       <div className="flex justify-end gap-2">
-                        {canWrite && (
+                        {canWrite && !isHandledByMe(it) && (
                           <button
                             className="btn-primary h-8 px-2 text-label-sm"
                             disabled={joiningID === it.id || it.status === 'closed' || it.status === 'completed' || it.status === 'cancelled'}

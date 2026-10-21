@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ApiUser, api, MasterDataEntry, masterDataApi, workItemsApi } from '../api'
+import { ApiUser, api, MasterDataEntry, masterDataApi, workItemsApi, WorkItem } from '../api'
 import {
   ActionMenu,
   ConfirmDialog,
@@ -109,6 +109,15 @@ export default function Rfs({
     const u = (user?.username ?? '').toLowerCase()
     if (!u) return false
     return item.created_by?.toLowerCase() === u || item.owner_username?.toLowerCase() === u
+  }
+
+  const myName = (user?.username ?? '').toLowerCase()
+
+  /** isHandledByMe: saya sudah owner atau sudah menjadi penangan RFS. */
+  function isHandledByMe(item: WorkItem): boolean {
+    if (!myName) return false
+    if (item.owner_username?.toLowerCase() === myName) return true
+    return (item.collaborators ?? []).some((c) => c.username.toLowerCase() === myName)
   }
 
   /** canCancel mengikuti aturan backend: admin/manager, atau sales pembuat. */
@@ -490,7 +499,7 @@ export default function Rfs({
                       </td>
                       <td className="w-px whitespace-nowrap">
                         <div className="flex justify-end gap-2">
-                          {canWrite && !closed && (
+                          {canWrite && !closed && !isHandledByMe(it) && (
                             <button
                               className="btn-primary h-8 px-2 text-label-sm"
                               disabled={joiningID === it.id}

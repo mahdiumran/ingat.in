@@ -88,6 +88,8 @@ export function ItemDetail({
   const [unlockReason, setUnlockReason] = useState('')
   const [collabInput, setCollabInput] = useState('')
   const [assignInput, setAssignInput] = useState('')
+  // F21: pratinjau gambar lampiran (lightbox).
+  const [preview, setPreview] = useState<Attachment | null>(null)
   // F21/F22: catatan penanganan selalu dapat disunting (tanpa tombol Edit).
   const [handling, setHandling] = useState<{ issue: string; trouble: string; solution: string }>({
     issue: '',
@@ -375,6 +377,12 @@ export function ItemDetail({
   }
 
   // ---- F21/F22/F23: catatan penanganan (tiket & Aktivasi/EWO) ----
+  // ItemDetail dipakai ulang saat berpindah item (tanpa remount), jadi penanda
+  // "sudah dimuat" harus direset agar draf tidak terbawa dari item sebelumnya.
+  useEffect(() => {
+    handlingLoaded.current = false
+  }, [id])
+
   // Sinkronkan draf dari item saat pertama kali data tiba (agar tidak menimpa
   // ketikan pengguna pada reload berikutnya).
   const isRFS = detail.data?.item?.item_type === 'rfs'
@@ -552,6 +560,17 @@ export function ItemDetail({
 
         {item && (
           <div className="flex flex-wrap gap-2">
+            {(isTicket || isRFS) && canWrite && user?.username && !isTerminalForFollow && !isOwner && !isCollaborator && (
+              <button
+                className="btn-primary"
+                onClick={item.owner_username ? () => addCollaborator(user.username) : claimTicket}
+                disabled={busy}
+                title={item.owner_username ? 'Ikuti sebagai penangan tambahan' : 'Ambil dan kerjakan'}
+              >
+                <span className="material-symbols-outlined text-[18px]">front_hand</span>
+                {item.owner_username ? `Ikuti ${typeLabel(item.item_type)}` : 'Kerjakan'}
+              </button>
+            )}
             <button className="btn-secondary" onClick={detail.reload} disabled={busy}>
               <span className="material-symbols-outlined text-[18px]">refresh</span>
               Muat ulang
@@ -652,6 +671,61 @@ export function ItemDetail({
                     </p>
                   )}
                 </section>
+
+                {/* F21/F22: Detail Pengerjaan / Gangguan (catatan penanganan).
+                    Ditempatkan tepat di bawah Deskripsi agar mudah diisi saat
+                    menangani tiket maupun Aktivasi/EWO. */}
+                {(isTicket || isRFS || item.status === 'pending_troubleshoot') && (item.ticket || item.rfs) && (
+                  <section className="card card-pad">
+                    <div className="mb-3 flex items-center justify-between gap-2">
+                      <h3 className="font-headline text-lg font-semibold">Detail Pengerjaan / Gangguan</h3>
+                      {canWrite && handlingDirty && (
+                        <span className="badge bg-warning-container text-on-warning-container border-outline-variant">
+                          belum disimpan
+                        </span>
+                      )}
+                    </div>
+
+                    {canWrite ? (
+                      <div className="space-y-3">
+                        <HandlingField
+                          id="h-issue"
+                          label="Issue ditemukan"
+                          value={handling.issue}
+                          onChange={(v) => setHandling({ ...handling, issue: v })}
+                        />
+                        <HandlingField
+                          id="h-trouble"
+                          label="Troubleshooting"
+                          value={handling.trouble}
+                          onChange={(v) => setHandling({ ...handling, trouble: v })}
+                        />
+                        <HandlingField
+                          id="h-solution"
+                          label="Action / Solusi"
+                          value={handling.solution}
+                          onChange={(v) => setHandling({ ...handling, solution: v })}
+                        />
+                        <div className="flex items-center justify-end gap-2">
+                          <button
+                            className="btn-primary"
+                            onClick={saveHandling}
+                            disabled={handlingBusy || !handlingDirty}
+                          >
+                            <span className="material-symbols-outlined text-[16px]">save</span>
+                            {handlingBusy ? 'Menyimpan…' : 'Simpan Catatan'}
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-2.5">
+                        <HandlingRead label="Issue ditemukan" value={storedHandling.issue} />
+                        <HandlingRead label="Troubleshooting" value={storedHandling.trouble} />
+                        <HandlingRead label="Action / Solusi" value={storedHandling.solution} />
+                      </div>
+                    )}
+                  </section>
+                )}
 
                 {/* Detail per tipe */}
                 <section className="card card-pad">
@@ -759,61 +833,6 @@ export function ItemDetail({
                     <div className="mt-3 border-t border-border pt-3">
                       <div className="kicker mb-1.5">Tag</div>
                       <TagList tags={item.tags} colors={tagColors} />
-                    </div>
-                  )}
-
-                  {/* F21/F22: catatan penanganan. F25: hanya tampil pada status
-                      pending_troubleshoot; di luar itu cukup field Catatan
-                      (Deskripsi/Komentar). */}
-                  {item.status === 'pending_troubleshoot' && (item.ticket || item.rfs) && (
-                    <div className="mt-4 border-t border-border pt-3">
-                      <div className="mb-2 flex items-center justify-between gap-2">
-                        <div className="kicker">Catatan Penanganan</div>
-                        {canWrite && handlingDirty && (
-                          <span className="badge bg-warning-container text-on-warning-container border-outline-variant">
-                            belum disimpan
-                          </span>
-                        )}
-                      </div>
-
-                      {canWrite ? (
-                        <div className="space-y-3">
-                          <HandlingField
-                            id="h-issue"
-                            label="Issue ditemukan"
-                            value={handling.issue}
-                            onChange={(v) => setHandling({ ...handling, issue: v })}
-                          />
-                          <HandlingField
-                            id="h-trouble"
-                            label="Troubleshooting"
-                            value={handling.trouble}
-                            onChange={(v) => setHandling({ ...handling, trouble: v })}
-                          />
-                          <HandlingField
-                            id="h-solution"
-                            label="Action / Solusi"
-                            value={handling.solution}
-                            onChange={(v) => setHandling({ ...handling, solution: v })}
-                          />
-                          <div className="flex items-center justify-end gap-2">
-                            <button
-                              className="btn-primary"
-                              onClick={saveHandling}
-                              disabled={handlingBusy || !handlingDirty}
-                            >
-                              <span className="material-symbols-outlined text-[16px]">save</span>
-                              {handlingBusy ? 'Menyimpan…' : 'Simpan Catatan'}
-                            </button>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="space-y-2.5">
-                          <HandlingRead label="Issue ditemukan" value={storedHandling.issue} />
-                          <HandlingRead label="Troubleshooting" value={storedHandling.trouble} />
-                          <HandlingRead label="Action / Solusi" value={storedHandling.solution} />
-                        </div>
-                      )}
                     </div>
                   )}
                 </section>
@@ -1019,13 +1038,15 @@ export function ItemDetail({
                         key={att.id}
                         className="flex items-center justify-between gap-3 rounded-control border border-border bg-surface-container-lowest px-3 py-2"
                       >
-                        <a
-                          href={attachmentsApi.downloadUrl(att.id)}
-                          className="flex min-w-0 items-center gap-2 text-body-sm hover:text-primary"
-                        >
-                          <span className="material-symbols-outlined text-[18px]">description</span>
-                          <span className="truncate">{att.filename}</span>
-                        </a>
+                        <div className="flex min-w-0 flex-1 items-center gap-3">
+                          <AttachmentThumb att={att} onPreview={setPreview} />
+                          <a
+                            href={attachmentsApi.downloadUrl(att.id)}
+                            className="min-w-0 flex-1 truncate text-body-sm hover:text-primary"
+                          >
+                            {att.filename}
+                          </a>
+                        </div>
                         {canWrite && (
                           <button
                             className="text-text-secondary hover:text-critical"
@@ -1130,9 +1151,7 @@ export function ItemDetail({
                   <ul className="divide-y divide-border">
                     {attachments.map((att) => (
                       <li key={att.id} className="flex items-center gap-3 px-5 py-3">
-                        <span className="material-symbols-outlined text-[22px] text-text-secondary">
-                          {attIcon(att.mime)}
-                        </span>
+                        <AttachmentThumb att={att} onPreview={setPreview} />
                         <div className="min-w-0 flex-1">
                           <a
                             href={attachmentsApi.downloadUrl(att.id)}
@@ -1247,21 +1266,7 @@ export function ItemDetail({
                       ) : (
                         <span className="text-body-sm text-text-secondary">belum ditetapkan</span>
                       )}
-                      {canWrite && user?.username && !isTerminalForFollow && !isOwner && (
-                        item.owner_username ? (
-                          !isCollaborator && (
-                            <button className="btn-secondary h-8 px-3 text-label-sm" onClick={() => addCollaborator(user.username)} disabled={busy}>
-                              <span className="material-symbols-outlined text-[16px]">front_hand</span>
-                              Ikuti Tiket
-                            </button>
-                          )
-                        ) : (
-                          <button className="btn-secondary h-8 px-3 text-label-sm" onClick={claimTicket} disabled={busy}>
-                            <span className="material-symbols-outlined text-[16px]">front_hand</span>
-                            Kerjakan
-                          </button>
-                        )
-                      )}
+                      {/* Aksi ambil/ikuti tersedia di header (kiri tombol Muat ulang). */}
                     </div>
 
                     {/* F25: owner lock — owner sudah terisi, hanya admin yang bisa ganti. */}
@@ -1337,16 +1342,7 @@ export function ItemDetail({
                           <span className="text-body-sm text-text-secondary">Belum ada penangan tambahan.</span>
                         )}
                       </div>
-                      {user?.username && !(item.collaborators ?? []).some((c) => c.username.toLowerCase() === user.username.toLowerCase()) && (
-                        <button
-                          className="btn-secondary h-8 px-3 text-label-sm"
-                          onClick={() => addCollaborator(user.username)}
-                          disabled={busy}
-                        >
-                          <span className="material-symbols-outlined text-[16px]">group_add</span>
-                          Ikut menangani
-                        </button>
-                      )}
+                      {/* Ikuti/kerjakan lewat tombol di header; di sini hanya kelola daftar. */}
                       {canManage && (
                         <div className="mt-2 flex flex-wrap items-end gap-2">
                           <input
@@ -1640,6 +1636,9 @@ export function ItemDetail({
         }}
       />
 
+      {/* F21: pratinjau gambar lampiran ukuran penuh. */}
+      {preview && <AttachmentLightbox att={preview} onClose={() => setPreview(null)} />}
+
       {/* F23: modal alasan cancel/hapus Aktivasi/EWO */}
       {rfsReason && (
         <Modal
@@ -1802,6 +1801,133 @@ function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`
   return `${(n / 1024 / 1024).toFixed(1)} MB`
+}
+
+/** AttachmentThumb (F21) — pratinjau kotak kecil di kiri nama berkas.
+ *
+ * Hanya gambar yang dipratinjau; berkas lain ditampilkan dengan ikon jenisnya.
+ * Berkas diambil sebagai blob URL ber-auth (lihat attachmentsApi.previewUrl)
+ * dan URL tersebut dilepas saat komponen dilepas atau berkas berubah.
+ */
+function AttachmentThumb({ att, onPreview }: { att: Attachment; onPreview?: (att: Attachment) => void }) {
+  const isImage = att.mime.startsWith('image/')
+  const [url, setUrl] = useState<string | null>(null)
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    if (!isImage) return
+    let cancelled = false
+    let objectUrl: string | null = null
+    setUrl(null)
+    setFailed(false)
+    attachmentsApi
+      .previewUrl(att.id)
+      .then((u) => {
+        objectUrl = u
+        if (cancelled) URL.revokeObjectURL(u)
+        else setUrl(u)
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true)
+      })
+    return () => {
+      cancelled = true
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [att.id, isImage])
+
+  if (!isImage || failed) {
+    return (
+      <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-control border border-border bg-surface-container-low text-text-secondary">
+        <span className="material-symbols-outlined text-[22px]">{attIcon(att.mime)}</span>
+      </span>
+    )
+  }
+
+  if (!url) {
+    return <span className="h-12 w-12 shrink-0 animate-pulse rounded-control border border-border bg-surface-container" />
+  }
+
+  return (
+    <button
+      type="button"
+      className="h-12 w-12 shrink-0 overflow-hidden rounded-control border border-border transition hover:border-primary"
+      title={`Pratinjau ${att.filename}`}
+      onClick={() => onPreview?.(att)}
+    >
+      <img src={url} alt={att.filename} className="h-full w-full object-cover" loading="lazy" />
+    </button>
+  )
+}
+
+/** AttachmentLightbox menampilkan pratinjau gambar ukuran penuh. */
+function AttachmentLightbox({
+  att,
+  onClose,
+}: {
+  att: Attachment
+  onClose: () => void
+}) {
+  const [url, setUrl] = useState<string | null>(null)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    let objectUrl: string | null = null
+    attachmentsApi
+      .previewUrl(att.id)
+      .then((u) => {
+        objectUrl = u
+        if (cancelled) URL.revokeObjectURL(u)
+        else setUrl(u)
+      })
+      .catch(() => {
+        if (!cancelled) setError('Gambar tidak dapat dimuat.')
+      })
+    return () => {
+      cancelled = true
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [att.id])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  return (
+    <div
+      className="fixed inset-0 z-[1000] flex flex-col items-center justify-center gap-3 bg-black/80 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Pratinjau ${att.filename}`}
+      onClick={onClose}
+    >
+      <div className="flex w-full max-w-4xl items-center justify-between gap-3 text-white" onClick={(e) => e.stopPropagation()}>
+        <span className="truncate text-body-sm font-medium">{att.filename}</span>
+        <div className="flex items-center gap-1">
+          <a className="btn-ghost h-9 px-2 text-white" href={attachmentsApi.downloadUrl(att.id)} title="Unduh">
+            <span className="material-symbols-outlined text-[20px]">download</span>
+          </a>
+          <button className="btn-ghost h-9 w-9 px-0 text-white" title="Tutup" onClick={onClose}>
+            <span className="material-symbols-outlined text-[20px]">close</span>
+          </button>
+        </div>
+      </div>
+      <div className="flex max-h-[85vh] w-full max-w-4xl items-center justify-center" onClick={(e) => e.stopPropagation()}>
+        {error ? (
+          <p className="text-body-sm text-white">{error}</p>
+        ) : url ? (
+          <img src={url} alt={att.filename} className="max-h-[85vh] max-w-full rounded-control object-contain" />
+        ) : (
+          <span className="material-symbols-outlined animate-spin text-[32px] text-white">progress_activity</span>
+        )}
+      </div>
+    </div>
+  )
 }
 
 /** attIcon memilih ikon Material sesuai jenis lampiran. */
