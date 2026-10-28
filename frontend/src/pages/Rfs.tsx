@@ -478,7 +478,7 @@ export default function Rfs({
                       </td>
                       <td className="max-w-[240px]">
                         <button
-                          className="block w-full truncate text-left font-medium hover:underline"
+                          className="block w-full break-words text-left font-medium hover:underline"
                           title={rfs?.customer_name || it.title}
                           onClick={() => setDetailID(it.id)}
                         >

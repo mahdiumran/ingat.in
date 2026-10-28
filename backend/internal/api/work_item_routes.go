@@ -758,10 +758,11 @@ func (s *Server) handleUpdateWorkItem(w http.ResponseWriter, r *http.Request) {
 	wf := workitems.WorkflowFor(item.ItemType)
 
 	// Perubahan isi (deskripsi & detail extension) hanya boleh dilakukan oleh
-	// pembuat/owner item atau admin. Field operasional lain (prioritas, owner,
-	// tenggat, tag, dsb.) tetap dapat diubah oleh operator.
+	// pembuat/owner item atau admin. Untuk task/daily_task, anggota tim yang
+	// sama juga boleh (F31, via canModifyItem). Field operasional lain
+	// (prioritas, owner, tenggat, tag, dsb.) tetap dapat diubah oleh operator.
 	if (req.Description != nil || req.RFS != nil || req.Task != nil || req.Ticket != nil || req.Reminder != nil) &&
-		!s.canJoinItemTeam(r, userFrom(r), item) {
+		!s.canModifyItem(r, userFrom(r), item) {
 		writeErr(w, http.StatusForbidden, "hanya pembuat item atau admin yang dapat mengubah deskripsi/detail")
 		return
 	}
@@ -1019,9 +1020,9 @@ func (s *Server) handleChangeStatus(w http.ResponseWriter, r *http.Request) {
 		s.itemError(w, err)
 		return
 	}
-	// F31: task & daily_task hanya dapat diubah oleh tim yang sama.
-	// Tiket/RFS: anggota tim pembuat juga boleh ikut menangani.
-	if !s.canJoinItemTeam(r, userFrom(r), item) {
+	// F31: task & daily_task hanya dapat diubah oleh tim yang sama; tiket/RFS
+	// mengikuti aturan "ikut menangani" (anggota tim pembuat juga boleh).
+	if !s.canModifyItem(r, userFrom(r), item) {
 		writeErr(w, http.StatusForbidden, "tidak berhak mengubah item ini")
 		return
 	}

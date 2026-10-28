@@ -121,6 +121,27 @@ func (s *Server) canWriteItemTeam(r *http.Request, user *models.User, item *mode
 	return false
 }
 
+// canModifyItem adalah penjaga tulis terpadu untuk sebuah work item.
+//
+// Pemilihan penjaga (F31):
+//   - task/daily_task (ber-scoping tim) : canWriteItemTeam — anggota tim yang
+//     sama boleh mengubah/menyelesaikan, termasuk item milik rekan setim.
+//   - tipe lain (tiket/RFS/reminder)    : canJoinItemTeam — perilaku lama tetap
+//     utuh: admin/pembuat/owner + anggota tim pembuat untuk tiket/RFS.
+//
+// Dipakai pada perubahan status (selesai) dan perubahan isi item agar aturan
+// tulis task/daily_task konsisten dengan canWriteItemTeam. Penjaga assign/
+// penangan tambahan tetap memakai canJoinItemTeam (UI-nya khusus tiket/RFS).
+func (s *Server) canModifyItem(r *http.Request, user *models.User, item *models.WorkItem) bool {
+	if item == nil {
+		return false
+	}
+	if isTeamScopedType(item.ItemType) {
+		return s.canWriteItemTeam(r, user, item)
+	}
+	return s.canJoinItemTeam(r, user, item)
+}
+
 // itemOwnedBy melaporkan apakah user adalah pembuat atau owner item.
 func itemOwnedBy(user *models.User, item *models.WorkItem) bool {
 	if user == nil || item == nil {
