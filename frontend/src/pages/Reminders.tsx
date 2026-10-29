@@ -362,10 +362,16 @@ export default function Reminders({
                         </button>
                       </td>
                       <td className="max-w-[280px]">
-                        <button className="block truncate text-left font-medium hover:underline" onClick={() => setDetailID(it.id)}>
+                        <button
+                          className="block w-full break-words text-left font-medium hover:underline"
+                          title={it.reminder?.subject_name || it.title}
+                          onClick={() => setDetailID(it.id)}
+                        >
                           {it.reminder?.subject_name || it.title}
                         </button>
-                        <span className="truncate text-label-sm text-text-secondary">{it.title}</span>
+                        <span className="line-clamp-2 text-label-sm text-text-secondary" title={it.title}>
+                          {it.title}
+                        </span>
                       </td>
                       <td>
                         <span className="badge bg-surface-container text-text-secondary border-outline-variant">
