@@ -296,6 +296,10 @@ func (s *Server) Handler() http.Handler {
 			mw.Patch("/master-data/{id}", s.handleUpdateMasterData)
 			mw.Delete("/master-data/{id}", s.handleDeleteMasterData)
 			mw.Post("/master-data/kinds", s.handleCreateMasterDataKind)
+			// F40: import CSV + template (upsert) dan export XLSX customer.
+			mw.Post("/master-data/import", s.handleImportCustomer)
+			mw.Get("/master-data/import/template", s.handleCustomerTemplate)
+			mw.Get("/master-data/export", s.handleCustomerExport)
 		})
 
 		api.Group(func(rp chi.Router) {

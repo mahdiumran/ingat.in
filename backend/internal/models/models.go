@@ -3,6 +3,7 @@
 package models
 
 import (
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -356,6 +357,11 @@ type WorkItem struct {
 	SLARunning bool       `json:"sla_running"`
 	SLAStartAt *time.Time `json:"sla_start_at,omitempty"`
 	SLAEndAt   *time.Time `json:"sla_end_at,omitempty"`
+
+	// Editable (fix Item 0): hasil perhitungan canModifyItem di lapisan API
+	// untuk user yang meminta — bukan kolom database. Dipakai UI untuk
+	// menampilkan/menyembunyikan aksi edit (nama, deskripsi, jadwal).
+	Editable bool `json:"editable,omitempty"`
 }
 
 // IsTicket melaporkan apakah item ini tipe tiket (incident/request/change).
@@ -729,10 +735,40 @@ const (
 )
 
 // Jenis customer pada meta_json.
+//
+// Fix Item 2: segmentasi diperluas agar mencakup corporate, reseller, dan
+// dedicated (dipakai filter export Excel & import CSV).
 const (
 	CustomerPersonal  = "personal"
 	CustomerCorporate = "corporate"
+	CustomerReseller  = "reseller"
+	CustomerDedicated = "dedicated"
 )
+
+// CustomerJenisList adalah daftar jenis customer yang sah, dipakai validasi
+// bersama oleh pembuatan manual, import CSV, dan export Excel.
+var CustomerJenisList = []string{
+	CustomerPersonal,
+	CustomerCorporate,
+	CustomerReseller,
+	CustomerDedicated,
+}
+
+// IsValidCustomerJenis melaporkan apakah jenis customer termasuk daftar sah.
+//
+// Perbandingan dilakukan persis (case-sensitive) setelah TrimSpace: nilai
+// disimpan kanonik huruf kecil, sehingga "Corporate" ditolak agar data tidak
+// bercampur dua bentuk. Pemanggil (import CSV) menormalkan ke huruf kecil
+// lebih dulu.
+func IsValidCustomerJenis(jenis string) bool {
+	j := strings.TrimSpace(jenis)
+	for _, v := range CustomerJenisList {
+		if j == v {
+			return true
+		}
+	}
+	return false
+}
 
 // RolePermission adalah satu sel matriks izin (role × action).
 type RolePermission struct {

@@ -22,6 +22,14 @@ export type CustomerMeta = {
   capacity: string
 }
 
+/** Fix Item 2: label tampil jenis customer (4 segmen). */
+export const JENIS_LABELS: Record<string, string> = {
+  personal: 'Personal',
+  corporate: 'Corporate',
+  reseller: 'Reseller',
+  dedicated: 'Dedicated',
+}
+
 export function customerMeta(entry: MasterDataEntry): CustomerMeta {
   const m = (entry.meta ?? {}) as Record<string, unknown>
   const str = (k: string) => (m[k] == null ? '' : String(m[k]))
@@ -60,6 +68,21 @@ export default function MasterDataKindPage({
 
   const debouncedSearch = useDebounced(search)
   const isCustomer = kind === 'customer'
+  // F40: state import CSV & export XLSX customer.
+  const [importOpen, setImportOpen] = useState(false)
+  const [exporting, setExporting] = useState(false)
+
+  async function handleExport(jenis: string) {
+    setExporting(true)
+    try {
+      await masterDataApi.downloadCustomerExport(jenis)
+      toast('success', 'Export selesai', `master-data-customer-${jenis}.xlsx`)
+    } catch (err) {
+      toast('error', 'Gagal export', err instanceof Error ? err.message : undefined)
+    } finally {
+      setExporting(false)
+    }
+  }
 
   const data = useAsync(() => masterDataApi.list({ kind }), [kind])
   const meta = useAsync(() => masterDataApi.list(), [])
@@ -113,6 +136,22 @@ export default function MasterDataKindPage({
               <span className="material-symbols-outlined text-[18px]">refresh</span>
               Muat ulang
             </button>
+            {isCustomer && canWrite && (
+              <>
+                <button className="btn-secondary" onClick={() => setImportOpen(true)}>
+                  <span className="material-symbols-outlined text-[18px]">upload_file</span>
+                  Import CSV
+                </button>
+                <button
+                  className="btn-secondary"
+                  onClick={() => void handleExport('all')}
+                  disabled={exporting}
+                >
+                  <span className="material-symbols-outlined text-[18px]">table_view</span>
+                  {exporting ? 'Menyiapkan…' : 'Export Excel'}
+                </button>
+              </>
+            )}
             {canWrite && (
               <button className="btn-primary" onClick={() => setCreating(true)}>
                 <span className="material-symbols-outlined text-[18px]">add</span>
@@ -184,6 +223,22 @@ export default function MasterDataKindPage({
           <GenericTable entries={entries} canWrite={canWrite} onEdit={setEditing} onDelete={removeEntry} />
         )}
       </section>
+
+      {/* F40: modal import CSV customer (upsert per kode). */}
+        {importOpen && (
+          <ImportCustomerModal
+            onClose={() => setImportOpen(false)}
+            onDone={(summary) => {
+              setImportOpen(false)
+              data.reload()
+              toast(
+                summary.failed ? 'warning' : 'success',
+                'Import selesai',
+                `${summary.inserted} dibuat, ${summary.updated} diperbarui, ${summary.failed} gagal`,
+              )
+            }}
+          />
+        )}
 
       {(creating || editing) &&
         (isCustomer ? (
@@ -324,7 +379,9 @@ function CustomerTable({
         <tbody>
           {entries.map((e) => {
             const cm = customerMeta(e)
-            const corporate = cm.jenis === 'corporate'
+            // Fix Item 2: jenis kini 4 nilai (personal/corporate/reseller/dedicated).
+            const jenisLabel = JENIS_LABELS[cm.jenis] ?? 'Personal'
+            const corporate = cm.jenis !== 'personal'
             return (
               <tr key={e.id}>
                 <td className="mono whitespace-nowrap text-label-md">{e.code}</td>
@@ -337,7 +394,7 @@ function CustomerTable({
                         : 'border-outline-variant bg-surface-container text-text-secondary'
                     }`}
                   >
-                    {corporate ? 'Corporate' : 'Personal'}
+                    {jenisLabel}
                   </span>
                 </td>
                 <td className="text-text-secondary">{corporate ? cm.pic || '—' : '—'}</td>
@@ -363,6 +420,139 @@ function CustomerTable({
 /* ------------------------------------------------------------------------- */
 /* Potongan kecil bersama                                                     */
 /* ------------------------------------------------------------------------- */
+
+
+/**
+ * ImportCustomerModal (F40) — unggah CSV customer dengan mode upsert/skip,
+ * menampilkan ringkasan hasil dan daftar baris yang gagal.
+ */
+function ImportCustomerModal({
+  onClose,
+  onDone,
+}: {
+  onClose: () => void
+  onDone: (summary: { inserted: number; updated: number; skipped: number; failed: number }) => void
+}) {
+  const [mode, setMode] = useState<'upsert' | 'skip'>('upsert')
+  const [file, setFile] = useState<File | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<{
+    inserted: number
+    updated: number
+    skipped: number
+    failed: number
+    errors: { row: number; kode?: string; nama?: string; error: string }[]
+  } | null>(null)
+  const [error, setError] = useState('')
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!file) {
+      setError('Pilih berkas CSV terlebih dahulu.')
+      return
+    }
+    setBusy(true)
+    setError('')
+    try {
+      const res = await masterDataApi.importCustomer(file, mode)
+      setResult(res)
+      if (!res.failed) onDone(res)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Gagal import')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal title="Import Customer (CSV)" onClose={onClose}>
+      <form onSubmit={(e) => void submit(e)} className="grid gap-4">
+        <div className="rounded-control border border-outline-variant bg-surface-container px-4 py-3 text-body-s text-text-secondary">
+          Kolom wajib: <b>nama</b>, <b>jenis</b> (personal/corporate/reseller/dedicated).
+          Kolom opsional: kode, pic, telepon, email, alamat, kapasitas. Kode yang sudah ada akan
+          diperbarui.
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => void masterDataApi.downloadCustomerTemplate('csv')}
+          >
+            <span className="material-symbols-outlined text-[18px]">download</span>
+            Template CSV
+          </button>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => void masterDataApi.downloadCustomerTemplate('xlsx')}
+          >
+            <span className="material-symbols-outlined text-[18px]">grid_on</span>
+            Template XLSX
+          </button>
+        </div>
+
+        <div>
+          <label className="label-field" htmlFor="import-file">
+            Berkas CSV <span className="text-critical">*</span>
+          </label>
+          <input
+            id="import-file"
+            className="input"
+            type="file"
+            accept=".csv,text/csv"
+            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+          />
+        </div>
+
+        <div>
+          <label className="label-field" htmlFor="import-mode">
+            Bila kode sudah ada
+          </label>
+          <select
+            id="import-mode"
+            className="input"
+            value={mode}
+            onChange={(e) => setMode(e.target.value as 'upsert' | 'skip')}
+          >
+            <option value="upsert">Perbarui entri yang ada (upsert)</option>
+            <option value="skip">Lewati baris tersebut</option>
+          </select>
+        </div>
+
+        {error && <div className="error-box">{error}</div>}
+
+        {result && (
+          <div className="rounded-control border border-outline-variant px-4 py-3 text-body-s">
+            <div className="font-medium">
+              {result.inserted} dibuat · {result.updated} diperbarui · {result.skipped} dilewati ·{' '}
+              {result.failed} gagal
+            </div>
+            {result.errors.length > 0 && (
+              <ul className="mt-2 max-h-40 space-y-1 overflow-auto text-text-secondary">
+                {result.errors.map((e, i) => (
+                  <li key={`${e.row}-${i}`}>
+                    Baris {e.row}
+                    {e.kode ? ` (${e.kode})` : e.nama ? ` (${e.nama})` : ''}: {e.error}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2">
+          <button type="button" className="btn-secondary" onClick={onClose} disabled={busy}>
+            {result ? 'Tutup' : 'Batal'}
+          </button>
+          <button type="submit" className="btn-primary" disabled={busy || !file}>
+            {busy ? 'Mengimpor…' : 'Mulai Import'}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  )
+}
 
 function ActiveBadge({ active }: { active: boolean }) {
   return (
@@ -428,7 +618,7 @@ function CustomerForm({
   const [isActive, setIsActive] = useState(entry?.is_active ?? true)
   const [busy, setBusy] = useState(false)
 
-  const corporate = jenis === 'corporate'
+  const corporate = jenis !== 'personal'
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
@@ -446,7 +636,7 @@ function CustomerForm({
       if (isEdit && entry) {
         await masterDataApi.update(entry.id, {
           label: name,
-          description: `${jenis === 'corporate' ? 'Corporate' : 'Personal'}${capacity ? ' · ' + capacity : ''}`,
+          description: `${JENIS_LABELS[jenis] ?? 'Personal'}${capacity ? ' · ' + capacity : ''}`,
           meta: metaPayload as unknown as Record<string, unknown>,
           is_active: isActive,
         })
@@ -454,7 +644,7 @@ function CustomerForm({
         await masterDataApi.create({
           kind: 'customer',
           label: name,
-          description: `${jenis === 'corporate' ? 'Corporate' : 'Personal'}${capacity ? ' · ' + capacity : ''}`,
+          description: `${JENIS_LABELS[jenis] ?? 'Personal'}${capacity ? ' · ' + capacity : ''}`,
           meta: metaPayload as unknown as Record<string, unknown>,
           is_active: isActive,
         })
@@ -498,7 +688,7 @@ function CustomerForm({
         <div className="grid gap-3.5 sm:grid-cols-2">
           <div>
             <label className="label-field" htmlFor="cu-name">
-              Nama{corporate ? ' Perusahaan' : ''}
+              Nama{jenis === 'personal' ? '' : ' Perusahaan'}
             </label>
             <input
               id="cu-name"
@@ -522,6 +712,8 @@ function CustomerForm({
             >
               <option value="personal">Personal</option>
               <option value="corporate">Corporate</option>
+              <option value="reseller">Reseller</option>
+              <option value="dedicated">Dedicated</option>
             </select>
           </div>
         </div>
@@ -540,7 +732,7 @@ function CustomerForm({
               placeholder="Nama penanggung jawab"
             />
             <p className="mt-1 text-label-sm text-text-secondary">
-              Wajib untuk pelanggan corporate.
+              Wajib untuk pelanggan corporate/reseller/dedicated.
             </p>
           </div>
         )}

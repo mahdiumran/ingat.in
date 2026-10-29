@@ -123,6 +123,40 @@ export function setUnauthorizedHandler(fn: (() => void) | null): void {
 
 type RequestOptions = RequestInit & { skipAuthRetry?: boolean }
 
+/**
+ * downloadFile (F40) — unduh berkas dari endpoint API dengan Authorization,
+ * lalu picu simpan ke disk. Bila respons bukan 2xx, pesan error JSON dibaca.
+ */
+export async function downloadFile(path: string, filename?: string): Promise<void> {
+  const headers = new Headers()
+  const token = getAccessToken()
+  if (token) headers.set('Authorization', `Bearer ${token}`)
+  const res = await fetch(`/api${path}`, { headers })
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`
+    try {
+      const data = (await res.json()) as { error?: string }
+      if (data?.error) msg = data.error
+    } catch {
+      /* abaikan body non-JSON */
+    }
+    throw new Error(msg)
+  }
+  // Ambil nama berkas dari Content-Disposition bila tidak ditentukan.
+  const disposition = res.headers.get('Content-Disposition') ?? ''
+  const match = /filename="?([^";]+)"?/.exec(disposition)
+  const name = filename ?? match?.[1] ?? 'download'
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = name
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
 export async function request<T = unknown>(path: string, init: RequestOptions = {}): Promise<T> {
   const { skipAuthRetry, ...rest } = init
 
@@ -423,6 +457,8 @@ export type WorkItem = {
   sla_running?: boolean
   sla_start_at?: string
   sla_end_at?: string
+  // Fix Item 0: izin edit dihitung server (termasuk rekan satu tim).
+  editable?: boolean
 }
 
 export type Collaborator = {
@@ -1027,6 +1063,32 @@ export const masterDataApi = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+
+  /* F40: import CSV (upsert) + template & export XLSX customer. */
+
+  importCustomer: async (file: File, mode: 'upsert' | 'skip' = 'upsert') => {
+    const form = new FormData()
+    form.append('file', file)
+    // request() menambahkan Authorization; jangan set Content-Type manual.
+    return request<{
+      ok: boolean
+      inserted: number
+      updated: number
+      skipped: number
+      failed: number
+      errors: { row: number; kode?: string; nama?: string; error: string }[]
+    }>(`/master-data/import?mode=${mode}`, { method: 'POST', body: form })
+  },
+
+  /**
+   * downloadCustomerExport mengunduh XLSX customer per kategori.
+   * jenis: 'all' | 'personal' | 'corporate' | 'reseller' | 'dedicated'
+   */
+  downloadCustomerExport: (jenis: string) =>
+    downloadFile(`/master-data/export?jenis=${encodeURIComponent(jenis)}`),
+
+  downloadCustomerTemplate: (format: 'csv' | 'xlsx') =>
+    downloadFile(`/master-data/import/template?format=${format}`),
 
   rolePermissions: () =>
     request<{

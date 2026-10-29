@@ -284,6 +284,9 @@ func (s *Server) handleListWorkItems(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	for i := range items {
 		items[i].ComputeSLA(now)
+		// Fix Item 0: flag editable per item agar UI dapat menampilkan aksi
+		// edit nama/deskripsi/jadwal (mis. reminder rekan satu tim).
+		items[i].Editable = s.canModifyItem(r, userFrom(r), &items[i])
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items":  items,
@@ -324,6 +327,10 @@ func (s *Server) handleGetWorkItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	item.ComputeSLA(time.Now().UTC())
+
+	// Fix Item 0: kirim flag editable agar UI tahu boleh mengedit isi/jadwal
+	// (rekan satu tim ikut boleh untuk reminder/tiket/RFS).
+	item.Editable = s.canModifyItem(r, userFrom(r), item)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"item":     item,

@@ -29,11 +29,15 @@ func isTeamScopedType(itemType string) bool {
 
 // canJoinItemTeam melaporkan apakah user boleh ikut menangani item (tiket/RFS).
 //
-// Aturan: admin/super selalu boleh. Untuk tipe tiket (incident/request/change)
-// dan rfs, user boleh bila timnya SAMA DENGAN TIM PEMBUAT item — karena work
-// item tiket/rfs tidak menyimpan team_id, tim efektif diturunkan dari tim
-// pembuat (created_by). Bila pembuat tidak ditemukan atau tidak punya tim,
-// fallback ke aturan lama (canManageItem).
+// Aturan: admin/super selalu boleh. Untuk tipe tiket (incident/request/change),
+// rfs, dan reminder, user boleh bila timnya SAMA DENGAN TIM PEMBUAT item —
+// karena work item tiket/rfs/reminder tidak menyimpan team_id, tim efektif
+// diturunkan dari tim pembuat (created_by). Bila pembuat tidak ditemukan atau
+// tidak punya tim, fallback ke aturan lama (canManageItem).
+//
+// Catatan (fix Item 0): reminder masuk aturan tim hanya untuk EDIT isi/jadwal;
+// akses hapus tidak memakai canJoinItemTeam tetapi canManageItem, sehingga
+// hapus reminder tetap terbatas pada pembuat/admin.
 func (s *Server) canJoinItemTeam(r *http.Request, user *models.User, item *models.WorkItem) bool {
 	if user == nil || item == nil {
 		return false
@@ -45,7 +49,17 @@ func (s *Server) canJoinItemTeam(r *http.Request, user *models.User, item *model
 		return true
 	}
 	switch item.ItemType {
-	case models.ItemIncident, models.ItemRequest, models.ItemChange, models.ItemRFS:
+	case models.ItemIncident, models.ItemRequest, models.ItemChange, models.ItemRFS, models.ItemReminder:
+		// Fix Item 6: tiket/RFS tanpa owner boleh di-claim siapa pun yang
+		// bukan viewer (self-claim lintas tim, mis. NOC mengambil tiket Sales).
+		if canSelfClaimItem(user, item) {
+			return true
+		}
+		// Fix Item 6: penangan tambahan (collaborator) tetap berhak setelah
+		// ikut, agar dapat memperbarui item yang ditangani.
+		if isCollaboratorOf(user, item) {
+			return true
+		}
 		creator, err := s.store.GetUserByUsername(r.Context(), strings.TrimSpace(item.CreatedBy))
 		if err == nil && creator != nil && user.TeamID != nil && creator.TeamID != nil && *user.TeamID == *creator.TeamID {
 			return true
@@ -158,4 +172,57 @@ func itemOwnedBy(user *models.User, item *models.WorkItem) bool {
 		return true
 	}
 	return false
+}
+
+// isCollaboratorOf melaporkan apakah user tercatat sebagai penangan tambahan
+// item. Dipakai fix Item 6 agar penangan yang sudah ikut dapat mengubah item.
+func isCollaboratorOf(user *models.User, item *models.WorkItem) bool {
+	if user == nil || item == nil {
+		return false
+	}
+	u := strings.ToLower(strings.TrimSpace(user.Username))
+	if u == "" {
+		return false
+	}
+	for _, c := range item.Collaborators {
+		if strings.ToLower(strings.TrimSpace(c.Username)) == u {
+			return true
+		}
+	}
+	return false
+}
+
+// canSelfClaimItem melaporkan apakah user boleh mengambil item lintas tim
+// (fix Item 6).
+//
+// Aturan: tiket (incident/request/change) dan RFS boleh diambil siapa pun
+// yang bukan viewer — termasuk lintas tim, mis. NOC mengambil tiket buatan
+// Sales. Item yang sudah punya owner TIDAK dapat diambil-alih (owner lock
+// tetap admin-only); jalur "ikut menangani" memakai collaborator.
+func canSelfClaimItem(user *models.User, item *models.WorkItem) bool {
+	if user == nil || item == nil {
+		return false
+	}
+	if user.Role == models.RoleViewer || user.Role == models.RoleCustomer {
+		return false
+	}
+	if !item.IsTicket() && item.ItemType != models.ItemRFS {
+		return false
+	}
+	return strings.TrimSpace(item.OwnerUsername) == ""
+}
+
+// canJoinHandling melaporkan apakah user boleh ikut menangani item tanpa
+// menjadi owner: self-join sebagai collaborator.
+//
+// Fix Item 6: NOC boleh ikut penanganan walau tiket sudah punya owner
+// (keputusan produk). Karena itu aturan ini tidak melihat owner sama sekali.
+func canJoinHandling(user *models.User, item *models.WorkItem) bool {
+	if user == nil || item == nil {
+		return false
+	}
+	if user.Role == models.RoleViewer || user.Role == models.RoleCustomer {
+		return false
+	}
+	return item.IsTicket() || item.ItemType == models.ItemRFS
 }

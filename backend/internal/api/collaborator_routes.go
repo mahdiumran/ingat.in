@@ -46,8 +46,10 @@ func (s *Server) handleAssignItem(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "viewer tidak dapat mengubah penanggung jawab")
 		return
 	}
-	// F31: task & daily_task hanya dapat diubah oleh tim yang sama.
-	if !s.canJoinItemTeam(r, userFrom(r), item) {
+	// Fix Item 6: self-claim tiket/RFS tanpa owner selalu boleh (lintas tim).
+	// Guard tim tetap berlaku untuk kasus lain (ganti owner milik orang lain).
+	u := userFrom(r)
+	if !canSelfClaimItem(u, item) && !s.canJoinItemTeam(r, u, item) {
 		writeErr(w, http.StatusForbidden, "tidak berhak mengubah item ini")
 		return
 	}
@@ -132,15 +134,26 @@ func (s *Server) handleAddCollaborator(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusForbidden, "viewer tidak dapat menambah penangan")
 		return
 	}
-	// F31: task & daily_task hanya dapat diubah oleh tim yang sama.
-	if !s.canJoinItemTeam(r, userFrom(r), item) {
-		writeErr(w, http.StatusForbidden, "tidak berhak mengubah item ini")
-		return
-	}
-
+	// Fix Item 6: ikut menangani tiket/RFS (self-join collaborator) selalu
+	// boleh lintas tim, termasuk saat item sudah punya owner (keputusan
+	// produk: NOC tetap boleh ikut penanganan). Guard tim tetap berlaku bila
+	// targetnya orang lain.
 	var req collaboratorRequest
 	if !decodeJSON(w, r, &req) {
 		return
+	}
+	{
+		actor0 := currentUsername(r)
+		target0 := strings.TrimSpace(req.Username)
+		if target0 == "" {
+			target0 = actor0
+		}
+		u := userFrom(r)
+		isSelfJoin := strings.EqualFold(target0, actor0)
+		if !isSelfJoin && !(canJoinHandling(u, item) || s.canJoinItemTeam(r, u, item)) {
+			writeErr(w, http.StatusForbidden, "tidak berhak mengubah item ini")
+			return
+		}
 	}
 	actor := currentUsername(r)
 	target := strings.TrimSpace(req.Username)

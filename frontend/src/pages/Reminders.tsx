@@ -103,6 +103,31 @@ export default function Reminders({
     return it.created_by?.toLowerCase() === u || it.owner_username?.toLowerCase() === u
   }
 
+  /**
+   * canEdit (fix Item 0) — server menghitung izin edit (termasuk rekan satu
+   * tim untuk reminder) dan mengirimnya sebagai flag `editable`. Fallback ke
+   * canManage bila field tidak tersedia (mis. respons lama).
+   */
+  function canEdit(it: WorkItem): boolean {
+    if (typeof it.editable === 'boolean') return it.editable
+    return canManage(it)
+  }
+
+  /**
+   * openEditor (fix Item 0b) — daftar item (/items) memuat extension hanya
+   * sebatas kolom inti; detail reminder (subject/jadwal) baru diisi oleh
+   * GET /items/{id}. Tanpa fetch ulang, modal edit terbuka dengan subject
+   * kosong dan menyimpan nilai kosong. Jadi ambil detail dulu, baru buka.
+   */
+  async function openEditor(it: WorkItem) {
+    try {
+      const detail = await workItemsApi.get(it.id)
+      setEditing(detail.item ?? it)
+    } catch (err) {
+      toast('error', 'Gagal memuat detail reminder', err instanceof Error ? err.message : undefined)
+    }
+  }
+
   async function handleDelete(it: WorkItem) {
     setConfirm({
       title: 'Hapus reminder?',
@@ -378,9 +403,14 @@ export default function Reminders({
                                       disabled: notifyingID === it.id,
                                       onClick: () => handleNotify(it),
                                     },
-                                    { label: 'Edit reminder', icon: 'edit', onClick: () => setEditing(it) },
                                   ]
                                 : []),
+                              // Fix Item 0: edit isi/jadwal terbuka untuk rekan
+                              // satu tim (flag `editable` dari server).
+                              ...(canWrite && canEdit(it)
+                                ? [{ label: 'Edit reminder', icon: 'edit', onClick: () => openEditor(it) }]
+                                : []),
+                              // Hapus tetap terbatas: pembuat/owner/admin.
                               ...(canWrite && canManage(it)
                                 ? [{ label: 'Hapus reminder', icon: 'delete', tone: 'danger' as const, onClick: () => handleDelete(it) }]
                                 : []),

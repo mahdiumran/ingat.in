@@ -471,13 +471,15 @@ func isUniqueViolation(err error) bool {
 func validateCustomerMeta(meta map[string]any) error {
 	jenis := metaString(meta, "jenis")
 	if jenis == "" {
-		return errors.New("jenis pelanggan wajib diisi (personal atau corporate)")
+		return errors.New("jenis pelanggan wajib diisi (personal, corporate, reseller, atau dedicated)")
 	}
-	if jenis != models.CustomerPersonal && jenis != models.CustomerCorporate {
-		return errors.New("jenis pelanggan harus personal atau corporate")
+	// Fix Item 2: jenis reseller & dedicated ikut diterima.
+	if !models.IsValidCustomerJenis(jenis) {
+		return errors.New("jenis pelanggan harus personal, corporate, reseller, atau dedicated")
 	}
-	if jenis == models.CustomerCorporate && metaString(meta, "pic") == "" {
-		return errors.New("nama PIC wajib diisi untuk pelanggan corporate")
+	// PIC wajib untuk segmen non-personal (corporate/reseller/dedicated).
+	if jenis != models.CustomerPersonal && metaString(meta, "pic") == "" {
+		return errors.New("nama PIC wajib diisi untuk pelanggan corporate/reseller/dedicated")
 	}
 	return nil
 }

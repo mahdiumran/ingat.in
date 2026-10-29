@@ -97,6 +97,11 @@ func TestValidateCustomerMeta(t *testing.T) {
 		{"jenis kosong", map[string]any{}, true},
 		{"jenis tidak dikenal", map[string]any{"jenis": "yayasan"}, true},
 		{"jenis kapitalisasi", map[string]any{"jenis": "Corporate", "pic": "A"}, true},
+		// Fix Item 2: segmen reseller & dedicated diterima.
+		{"reseller dengan pic", map[string]any{"jenis": "reseller", "pic": "Budi"}, false},
+		{"reseller tanpa pic", map[string]any{"jenis": "reseller"}, true},
+		{"dedicated dengan pic", map[string]any{"jenis": "dedicated", "pic": "Budi"}, false},
+		{"dedicated tanpa pic", map[string]any{"jenis": "dedicated"}, true},
 		{"meta nil", nil, true},
 	}
 	for _, tc := range cases {

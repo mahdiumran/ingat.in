@@ -142,7 +142,8 @@ export default function DailyTasks({
   const [showFullCreate, setShowFullCreate] = useState(false)
   // F22: panel ringkasan notifikasi (konfigurasi pengiriman + pratinjau).
   const [showSummary, setShowSummary] = useState(false)
-
+  // Fix Item 1: edit nama & deskripsi daily task langsung dari kartu.
+  const [editTarget, setEditTarget] = useState<WorkItem | null>(null)
   const tagColors = useTagColors()
 
   // F31: tim — untuk filter (admin) & pemilih tim saat membuat task.
@@ -711,6 +712,16 @@ export default function DailyTasks({
                                 <span className="material-symbols-outlined text-[16px]">delete</span>
                               </button>
                             )}
+                            {/* Fix Item 1: edit judul & deskripsi daily task. */}
+                            {canManage(it) && (
+                              <button
+                                className="btn-ghost h-7 w-7 px-0"
+                                title="Edit nama & deskripsi"
+                                onClick={() => setEditTarget(it)}
+                              >
+                                <span className="material-symbols-outlined text-[16px]">edit</span>
+                              </button>
+                            )}
                           </div>
                         )}
                       </article>
@@ -831,6 +842,19 @@ export default function DailyTasks({
 
       {/* Konfirmasi penyelesaian + keterangan (keterangan ikut ke spreadsheet). */}
       {showSummary && <DailySummaryModal toast={toast} onClose={() => setShowSummary(false)} />}
+      {/* Fix Item 1: modal edit nama & deskripsi daily task. */}
+      {editTarget && (
+        <EditTaskModal
+          entry={editTarget}
+          onClose={() => setEditTarget(null)}
+          onSaved={() => {
+            setEditTarget(null)
+            items.reload()
+            toast('success', 'Task diperbarui', editTarget.ref_no)
+          }}
+          onError={(msg) => toast('error', 'Gagal menyimpan perubahan', msg)}
+        />
+      )}
 
       {doneTarget && (
         <Modal
@@ -976,6 +1000,89 @@ export default function DailyTasks({
         }}
       />
     </div>
+  )
+}
+
+/* ------------------------------------------------------------------------- */
+
+/**
+ * EditTaskModal (fix Item 1) — ubah nama (judul) & deskripsi daily task.
+ * Backend: PATCH /api/items/{id} dengan { title, description }; izin dijaga
+ * canModifyItem (pembuat/owner/admin/rekan satu tim).
+ */
+function EditTaskModal({
+  entry,
+  onClose,
+  onSaved,
+  onError,
+}: {
+  entry: WorkItem
+  onClose: () => void
+  onSaved: () => void
+  onError: (msg: string) => void
+}) {
+  const [title, setTitle] = useState(entry.title)
+  const [description, setDescription] = useState(entry.description)
+  const [busy, setBusy] = useState(false)
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!title.trim()) {
+      onError('Nama task wajib diisi.')
+      return
+    }
+    setBusy(true)
+    try {
+      await workItemsApi.update(entry.id, {
+        title: title.trim(),
+        ...(description !== entry.description ? { description } : {}),
+      })
+      onSaved()
+    } catch (err) {
+      onError(err instanceof Error ? err.message : 'Terjadi kesalahan')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal title={`Edit Task — ${entry.ref_no}`} onClose={onClose}>
+      <form onSubmit={(e) => void submit(e)} className="grid gap-4">
+        <div>
+          <label className="label-field" htmlFor="dt-edit-title">
+            Nama task <span className="text-critical">*</span>
+          </label>
+          <input
+            id="dt-edit-title"
+            className="input"
+            required
+            autoFocus
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+          />
+        </div>
+        <div>
+          <label className="label-field" htmlFor="dt-edit-desc">
+            Deskripsi
+          </label>
+          <textarea
+            id="dt-edit-desc"
+            className="input min-h-24"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="Keterangan task (opsional)"
+          />
+        </div>
+        <div className="flex justify-end gap-2">
+          <button type="button" className="btn-secondary" onClick={onClose} disabled={busy}>
+            Batal
+          </button>
+          <button type="submit" className="btn-primary" disabled={busy || !title.trim()}>
+            {busy ? 'Menyimpan…' : 'Simpan Perubahan'}
+          </button>
+        </div>
+      </form>
+    </Modal>
   )
 }
 
