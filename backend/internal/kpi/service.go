@@ -280,11 +280,15 @@ func targetsFor(c repository.KPICycleRow) sla.Targets {
 
 var wib = time.FixedZone("WIB", 7*3600)
 
+// pct menghitung persentase part/total dan membulatkan ke 1 desimal.
+//
+// Tanpa pembulatan di sini nilai mentah seperti 33.333333333333336 ikut
+// terkirim ke UI dan tampil sebagai "33.333333333333336%".
 func pct(part, total int) float64 {
 	if total == 0 {
 		return 0
 	}
-	return 100 * float64(part) / float64(total)
+	return round1(100 * float64(part) / float64(total))
 }
 
 func round1(v float64) float64 {
