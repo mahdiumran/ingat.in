@@ -588,7 +588,11 @@ export function ItemDetail({
                 className="btn-primary"
                 onClick={item.owner_username ? () => addCollaborator(user.username) : claimTicket}
                 disabled={busy}
-                title={item.owner_username ? 'Ikuti sebagai penangan tambahan' : 'Ambil dan kerjakan'}
+                title={
+                  item.owner_username
+                    ? 'Ikuti sebagai penangan tambahan'
+                    : 'Ambil tiket ini dan mulai kerjakan (status otomatis maju)'
+                }
               >
                 <span className="material-symbols-outlined text-[18px]">front_hand</span>
                 {item.owner_username ? `Ikuti ${typeLabel(item.item_type)}` : 'Kerjakan'}

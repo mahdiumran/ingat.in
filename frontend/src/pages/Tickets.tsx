@@ -545,7 +545,7 @@ export default function Tickets({
                             className="btn-primary h-8 px-2 text-label-sm"
                             disabled={joiningID === it.id || it.status === 'closed' || it.status === 'completed' || it.status === 'cancelled'}
                             onClick={() => handleJoinTicket(it)}
-                            title={it.owner_username ? 'Ikuti tiket sebagai penangan tambahan' : 'Ambil dan kerjakan tiket'}
+                            title={it.owner_username ? 'Ikuti tiket sebagai penangan tambahan' : 'Ambil tiket ini dan mulai kerjakan (status otomatis maju)'}
                           >
                             <span className={`material-symbols-outlined text-[16px] ${joiningID === it.id ? 'animate-spin' : ''}`}>
                               {joiningID === it.id ? 'progress_activity' : it.owner_username ? 'group_add' : 'play_arrow'}

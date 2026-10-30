@@ -3,8 +3,10 @@ package api
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 
 	"ingatin/backend/internal/models"
 	"ingatin/backend/internal/workitems"
@@ -26,6 +28,41 @@ type assignRequest struct {
 // collaboratorRequest adalah body POST /api/items/{id}/collaborators.
 type collaboratorRequest struct {
 	Username string `json:"username"`
+}
+
+// ticketClaimStatus menentukan status berikutnya saat sebuah tiket diambil
+// (self-claim) dan belum punya owner.
+//
+// Aturan (hanya untuk transisi yang sah menurut workflow):
+//   - new/assigned (incident & request) -> in_progress.
+//   - scheduled (change) -> implementing. Draft/review/approved tidak melompat
+//     karena transisinya tidak diizinkan workflow.
+//   - pending_customer/resolved (incident & request) -> in_progress, karena
+//     tiket tanpa owner yang diambil kembali harus jalan lagi.
+//   - Status terminal tidak pernah dimajukan otomatis.
+func ticketClaimStatus(itemType, current string) string {
+	target := "in_progress"
+	if itemType == models.ItemChange {
+		target = "implementing"
+	}
+	// Hanya tipe tiket yang punya perilaku "mengerjakan" otomatis.
+	if itemType != models.ItemIncident && itemType != models.ItemRequest && itemType != models.ItemChange {
+		return ""
+	}
+	// CanTransition menganggap from == to selalu sah; status yang sudah di
+	// tujuan tidak perlu diubah.
+	if current == target {
+		return ""
+	}
+	wf := workitems.WorkflowFor(itemType)
+	if wf == nil || !wf.CanTransition(current, target) {
+		return ""
+	}
+	// Jangan pernah memicu transisi penutupan secara otomatis saat claim.
+	if result := wf.EvaluateTransitions(current, target); result.IsClosing || result.IsReopen {
+		return ""
+	}
+	return target
 }
 
 // handleAssignItem menetapkan owner (penanggung jawab utama) sebuah tiket.
@@ -85,19 +122,66 @@ func (s *Server) handleAssignItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.store.SetWorkItemOwner(r.Context(), item.ID, target, actor); err != nil {
+	wasUnclaimed := strings.TrimSpace(item.OwnerUsername) == ""
+	claimsSelf := strings.EqualFold(target, actor)
+
+	// Ambil tiket tanpa owner lalu langsung mengerjakan: status ikut maju ke
+	// in_progress agar NOC tidak perlu langkah tambahan. Hanya berlaku untuk
+	// transisi yang sah menurut workflow (change memakai status implementing;
+	// tiket dari state lain tidak dipaksa pindah).
+	nextStatus := ""
+	if wasUnclaimed && claimsSelf && item.IsTicket() {
+		nextStatus = ticketClaimStatus(item.ItemType, item.Status)
+	}
+
+	now := time.Now().UTC()
+	err := s.store.Tx(r.Context(), func(tx pgx.Tx) error {
+		if err := s.store.SetWorkItemOwner(r.Context(), item.ID, target, actor); err != nil {
+			return err
+		}
+		// Penekan tombol "Kerjakan" (self-claim) otomatis tercatat sebagai
+		// penangan tambahan agar terkendali oleh aturan sembunyi tombol "Ikuti"
+		// dan tampil pada daftar "Ikut Menangani". Idempotent.
+		if claimsSelf {
+			if _, err := s.store.AddCollaborator(r.Context(), item.ID, target, actor); err != nil {
+				return err
+			}
+		}
+		if nextStatus != "" {
+			wf := workitems.WorkflowFor(item.ItemType)
+			fields := map[string]any{
+				"status": nextStatus, "updated_by_username": actor,
+			}
+			if item.FirstResponseAt == nil && nextStatus != wf.InitialState {
+				fields["first_response_at"] = now
+			}
+			if err := s.store.UpdateWorkItemFields(r.Context(), tx, item.ID, fields); err != nil {
+				return err
+			}
+			if item.IsTicket() {
+				result := wf.EvaluateTransitions(item.Status, nextStatus)
+				if err := s.updateSLACycleOnStatus(r.Context(), tx, item, nextStatus, result, actor, now, wf.InitialState); err != nil {
+					return err
+				}
+			}
+			if err := workitems.AppendEvent(r.Context(), tx, workitems.EventInput{
+				WorkItemID: item.ID.String(),
+				EventType:  workitems.EventStatusChanged,
+				Actor:      actor,
+				FromValue:  item.Status,
+				ToValue:    nextStatus,
+				Detail:     map[string]any{"note": "Diambil dan dikerjakan"},
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
-	// Penekan tombol "Kerjakan" (self-claim) otomatis tercatat sebagai penangan
-	// tambahan agar terkendali oleh aturan sembunyi tombol "Ikuti" dan tampil
-	// pada daftar "Ikut Menangani". Idempotent: menambah ulang tidak error.
-	if strings.EqualFold(target, actor) {
-		if _, err := s.store.AddCollaborator(r.Context(), item.ID, target, actor); err != nil {
-			writeInternalError(w, err)
-			return
-		}
-	}
+
 	_ = s.store.AppendEventSimple(r.Context(), item.ID, workitems.EventAssigned, map[string]any{
 		"owner_username": target,
 		"reason":         strings.TrimSpace(req.Reason),
@@ -109,7 +193,15 @@ func (s *Server) handleAssignItem(w http.ResponseWriter, r *http.Request) {
 			"owner_username": target,
 			"previous":       item.OwnerUsername,
 			"reason":         strings.TrimSpace(req.Reason),
+			"auto_status":    nextStatus,
 		}, true)
+	if nextStatus != "" {
+		s.audit(r, actor, "item.status_change", "work_item", item.ID.String(), map[string]any{
+			"ref_no": item.RefNo, "from": item.Status, "to": nextStatus, "auto": "claim",
+		}, true)
+		// F44: ringkasan tiket ikut diperbarui setelah diambil (status maju).
+		s.maybeSendTicketSummary(r.Context(), now)
+	}
 
 	updated, err := s.store.GetWorkItem(r.Context(), item.ID)
 	if err != nil {
