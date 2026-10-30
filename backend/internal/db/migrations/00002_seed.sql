@@ -61,14 +61,14 @@ INSERT INTO workflow_definitions (item_type, name, states_json, transitions_json
 ),
 (
   'rfs', 'Alur RFS Standar',
-  '["planned","in_progress","in_progress_field","activated","postponed","cancelled"]'::jsonb,
-  '{"planned":["in_progress","postponed","cancelled"],
+  '["new","in_progress","in_progress_field","activated","postponed","cancelled"]'::jsonb,
+  '{"new":["in_progress","postponed","cancelled"],
     "in_progress":["in_progress_field","activated","postponed","cancelled"],
     "in_progress_field":["activated","postponed","cancelled"],
     "activated":[],
-    "postponed":["planned","in_progress","cancelled"],
+    "postponed":["new","in_progress","cancelled"],
     "cancelled":[]}'::jsonb,
-  'planned', '["activated","cancelled"]'::jsonb, TRUE
+  'new', '["activated","cancelled"]'::jsonb, TRUE
 ),
 (
   'incident', 'Alur Insiden NOC',

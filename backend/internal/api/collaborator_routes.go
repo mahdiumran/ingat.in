@@ -39,8 +39,8 @@ type collaboratorRequest struct {
 //     karena transisinya tidak diizinkan workflow.
 //   - pending_customer/resolved (incident & request) -> in_progress, karena
 //     tiket tanpa owner yang diambil kembali harus jalan lagi.
-//   - planned/postponed (rfs) -> in_progress: Aktivasi/EWO yang mulai
-//     dikerjakan tidak boleh tertinggal di planned.
+//   - new/postponed (rfs) -> in_progress: Aktivasi/EWO yang mulai dikerjakan
+//     tidak boleh tertinggal di status awal.
 //   - Status terminal tidak pernah dimajukan otomatis.
 func ticketClaimStatus(itemType, current string) string {
 	target := "in_progress"
@@ -135,6 +135,13 @@ func (s *Server) handleAssignItem(w http.ResponseWriter, r *http.Request) {
 	nextStatus := ""
 	if wasUnclaimed && claimsSelf && (item.IsTicket() || item.ItemType == models.ItemRFS) {
 		nextStatus = ticketClaimStatus(item.ItemType, item.Status)
+		// RFS: mengambil sebelum jadwal tiba tidak memajukan status; penangan
+		// menekan "Mulai Kerjakan" saat jadwalnya sudah masuk.
+		if nextStatus != "" && item.ItemType == models.ItemRFS {
+			if _, blocked := rfsStartGate(item, time.Now().UTC()); blocked {
+				nextStatus = ""
+			}
+		}
 	}
 
 	now := time.Now().UTC()
@@ -270,7 +277,7 @@ func (s *Server) handleAddCollaborator(w http.ResponseWriter, r *http.Request) {
 
 	// Tiket/RFS yang masih di state awal otomatis maju ke "in progress" saat
 	// ada penangan yang mulai mengerjakan (self-join). Tanpa ini status tetap
-	// planned/new walau sudah ada yang menangani.
+	// new/planned walau sudah ada yang menangani.
 	joinedStatus := ""
 	if isSelfJoin {
 		joinedStatus = s.advanceStatusOnJoin(r, item, actor)
@@ -295,8 +302,9 @@ func (s *Server) handleAddCollaborator(w http.ResponseWriter, r *http.Request) {
 //
 // Aturan:
 //   - hanya tiket (incident/request/change) dan RFS;
-//   - hanya bila transisinya sah menurut workflow (mis. RFS planned →
+//   - hanya bila transisinya sah menurut workflow (mis. RFS new →
 //     in_progress, change scheduled → implementing);
+//   - RFS hanya dimajukan bila jadwalnya sudah tiba;
 //   - status terminal (activated/cancelled/closed/completed) tidak disentuh.
 func (s *Server) advanceStatusOnJoin(r *http.Request, item *models.WorkItem, actor string) string {
 	if item == nil {
@@ -323,6 +331,13 @@ func (s *Server) advanceStatusOnJoin(r *http.Request, item *models.WorkItem, act
 	// Jangan pernah menutup/membuka item lewat jalur ini.
 	if res := wf.EvaluateTransitions(item.Status, target); res.IsClosing || res.IsReopen {
 		return ""
+	}
+	// RFS: mulai dikerjakan hanya setelah jadwal tiba. Sebelum itu, ikut
+	// menangani hanya mencatat penangan tanpa memajukan status.
+	if item.ItemType == models.ItemRFS {
+		if _, blocked := rfsStartGate(item, time.Now().UTC()); blocked {
+			return ""
+		}
 	}
 
 	now := time.Now().UTC()

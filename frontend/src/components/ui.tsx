@@ -401,6 +401,8 @@ export type ActionMenuItem = {
   onClick: () => void
   disabled?: boolean
   tone?: 'default' | 'warning' | 'success' | 'danger'
+  /** Tooltip opsional, mis. alasan sebuah aksi dinonaktifkan. */
+  title?: string
 }
 
 export function ActionMenu({ items, label = 'Penanganan' }: { items: ActionMenuItem[]; label?: string }) {
@@ -476,6 +478,7 @@ export function ActionMenu({ items, label = 'Penanganan' }: { items: ActionMenuI
           type="button"
           role="menuitem"
           disabled={item.disabled}
+          title={item.title}
           onClick={() => {
             setOpen(false)
             item.onClick()

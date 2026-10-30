@@ -91,6 +91,8 @@ func TestRFSCollaboratorHandling(t *testing.T) {
 	})
 
 	seq := 0
+	// RFS dibuat tanpa jadwal (ExpireAt nil) agar tidak terkena gate jadwal
+	// pada transisi status di test ini.
 	newRFS := func(owner string) *models.WorkItem {
 		t.Helper()
 		seq++
@@ -102,7 +104,7 @@ func TestRFSCollaboratorHandling(t *testing.T) {
 				ItemType:      models.ItemRFS,
 				Title:         "Aktivasi uji " + suffix,
 				Priority:      "normal",
-				Status:        "planned",
+				Status:        "new",
 				OwnerUsername: owner,
 				CreatedBy:     sales.Username,
 			})
@@ -212,7 +214,7 @@ func TestRFSCollaboratorHandling(t *testing.T) {
 	}
 
 	// Bug 2b: penangan dapat menutup RFS (install_stage activated + status).
-	// Alur workflow RFS: planned → in_progress → activated.
+	// Alur workflow RFS: new → in_progress → activated.
 	if code := changeStatus(joiner, rfs.ID, "in_progress"); code != http.StatusOK {
 		t.Fatalf("penangan memulai RFS: got %d, want 200", code)
 	}

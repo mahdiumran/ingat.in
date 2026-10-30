@@ -14,6 +14,7 @@ import {
 } from '../components/ui'
 import { statusLabel, statusTone } from '../design/tokens'
 import { useAsync, useDebounced, useTagColors } from '../hooks'
+import { rfsStartGate } from '../lib/rfs'
 import { ItemDetail } from './WorkItemDetail'
 
 type Toast = (kind: 'success' | 'error' | 'info' | 'warning', title: string, body?: string) => void
@@ -232,10 +233,10 @@ export default function Rfs({
         toast('success', 'RFS mulai dikerjakan', `${refNo} ditetapkan kepada ${user.username}`)
       } else {
         const result = await workItemsApi.addCollaborator(id, user.username)
-        // Status otomatis maju (mis. planned → in_progress) saat mulai menangani.
+        // Status maju ke in_progress hanya bila jadwal RFS sudah tiba.
         const detail = result.status
           ? `${refNo} — status: ${statusLabel(result.status)}`
-          : refNo
+          : `${refNo} — menunggu jadwal untuk mulai dikerjakan`
         toast(
           result.inserted ? 'success' : 'info',
           result.inserted ? 'Berhasil mengikuti RFS' : 'Sudah mengikuti RFS',
@@ -266,6 +267,46 @@ export default function Rfs({
           items.reload()
         } catch (err) {
           toast('error', `Gagal: ${label}`, err instanceof Error ? err.message : undefined)
+        } finally {
+          setBusyID(null)
+        }
+      },
+    })
+  }
+
+  /**
+   * startRFS — tombol "Mulai Kerjakan": new → in_progress.
+   *
+   * Hanya tersedia setelah jadwal RFS (expire_at) tiba; sebelum itu tombol
+   * nonaktif dan alasannya ditampilkan. Backend juga menolak permintaan yang
+   * terlalu awal sehingga aturan tidak dapat dilewati dari klien.
+   *
+   * RFS tanpa owner: pengambil alih sekaligus menjadi owner (dan tercatat
+   * sebagai penangan), karena status tidak boleh "in progress" tanpa penangan.
+   */
+  function startRFS(id: string, refNo: string, gateReason: string, ownerUsername?: string) {
+    const claimFirst = !ownerUsername && !!user?.username
+    setConfirm({
+      title: 'Mulai kerjakan RFS?',
+      body: claimFirst
+        ? `${refNo} akan diambil oleh ${user?.username} dan statusnya menjadi "In Progress".`
+        : `${refNo} akan dipindahkan ke status "In Progress". ${gateReason}.`,
+      confirmLabel: 'Mulai Kerjakan',
+      tone: 'primary',
+      icon: 'play_arrow',
+      run: async () => {
+        setBusyID(id)
+        try {
+          if (claimFirst && user?.username) {
+            // assign() memajukan status ke in_progress karena jadwal sudah tiba.
+            await workItemsApi.assign(id, user.username)
+          } else {
+            await workItemsApi.rfsStart(id, 'Mulai kerjakan')
+          }
+          toast('success', 'RFS mulai dikerjakan', refNo)
+          items.reload()
+        } catch (err) {
+          toast('error', 'Gagal memulai RFS', err instanceof Error ? err.message : undefined)
         } finally {
           setBusyID(null)
         }
@@ -378,7 +419,8 @@ export default function Rfs({
               }}
             >
               <option value="">Semua</option>
-              <option value="planned">Planned</option>
+              <option value="new">New</option>
+              <option value="planned">Planned (lama)</option>
               <option value="in_progress">In Progress</option>
               <option value="in_progress_field">Penanganan Lapangan</option>
               <option value="pending_troubleshoot">Pending Troubleshooting</option>
@@ -477,6 +519,9 @@ export default function Rfs({
                   const rfs = it.rfs
                   const closed = isClosedItem(it)
                   const busy = busyID === it.id
+                  // Tombol "Mulai Kerjakan" hanya aktif setelah jadwal RFS tiba.
+                  const gate = rfsStartGate(it.status, it.expire_at, it.rfs?.install_stage)
+                  const notStarted = it.status === 'new' || it.status === 'planned' || it.status === 'postponed'
                   return (
                     <tr key={it.id}>
                       <td>
@@ -551,7 +596,21 @@ export default function Rfs({
                       </td>
                       <td className="w-px whitespace-nowrap">
                         <div className="flex justify-end gap-2">
-                          {canWrite && !closed && !isHandledByMe(it) && (
+                          {/* Tombol utama: mulai kerjakan (belum dimulai) atau ikut menangani. */}
+                          {canWrite && !closed && notStarted && (
+                            <button
+                              className="btn-primary h-8 px-2 text-label-sm"
+                              disabled={!gate.allowed || busy}
+                              onClick={() => startRFS(it.id, it.ref_no, gate.reason, it.owner_username)}
+                              title={gate.allowed ? 'Mulai kerjakan RFS (status menjadi In Progress)' : gate.reason}
+                            >
+                              <span className={`material-symbols-outlined text-[16px] ${busy ? 'animate-spin' : ''}`}>
+                                {busy ? 'progress_activity' : 'play_arrow'}
+                              </span>
+                              Mulai Kerjakan
+                            </button>
+                          )}
+                          {canWrite && !closed && !notStarted && !isHandledByMe(it) && (
                             <button
                               className="btn-primary h-8 px-2 text-label-sm"
                               disabled={joiningID === it.id}
@@ -568,14 +627,28 @@ export default function Rfs({
                             label="Penanganan"
                             items={[
                               { label: 'Lihat detail', icon: 'open_in_new', onClick: () => setDetailID(it.id) },
-                              ...(canWrite && !closed && it.status !== 'in_progress'
-                                ? [{ label: 'In Progress', icon: 'play_arrow', disabled: busy, onClick: () => changeStatus(it.id, it.ref_no, 'in_progress', 'In Progress') }]
+                              // Mulai Kerjakan: new → in_progress, hanya setelah jadwal tiba.
+                              ...(canWrite && !closed && notStarted
+                                ? [{
+                                    label: 'Mulai Kerjakan',
+                                    icon: 'play_arrow',
+                                    disabled: !gate.allowed || busy,
+                                    title: gate.allowed ? 'Mulai kerjakan RFS' : gate.reason,
+                                    onClick: () => startRFS(it.id, it.ref_no, gate.reason, it.owner_username),
+                                  }]
                                 : []),
                               ...(canWrite && !closed
                                 ? [
                                     { label: 'Troubleshoot', icon: 'handyman', tone: 'warning' as const, disabled: busy, onClick: () => setTroubleTarget({ id: it.id, refNo: it.ref_no }) },
                                     { label: 'Postpone', icon: 'schedule', disabled: busy, onClick: () => changeStatus(it.id, it.ref_no, 'postponed', 'Postpone') },
-                                    { label: 'Close ticket', icon: 'task_alt', tone: 'success' as const, disabled: busy, onClick: () => markActivated(it.id, it.ref_no) },
+                                    {
+                                      label: 'Close ticket',
+                                      icon: 'task_alt',
+                                      tone: 'success' as const,
+                                      disabled: busy || notStarted,
+                                      title: notStarted ? 'Mulai kerjakan RFS dulu sebelum menutup tiket' : 'Tutup RFS (Closed/Completed)',
+                                      onClick: () => markActivated(it.id, it.ref_no),
+                                    },
                                   ]
                                 : []),
                               ...(canManage(it) ? [{ label: 'Ubah RFS', icon: 'edit', onClick: () => setEditItem(it.id) }] : []),
@@ -1057,7 +1130,9 @@ export function RFSForm({
         await workItemsApi.create({
           ...payload,
           item_type: 'rfs',
-          status: 'planned',
+          // Status awal RFS: `new` (belum dikerjakan). Status maju ke
+          // in_progress hanya lewat tombol "Mulai Kerjakan" setelah jadwal tiba.
+          status: 'new',
         })
       }
       onSaved()

@@ -405,7 +405,7 @@ func intPtr(v int) *int { return &v }
 // tidak bergantung pada paket workitems (menghindari impor melingkar).
 var workflowStates = map[string]stateSet{
 	models.ItemReminder: {"scheduled": true, "active": true, "expiring": true, "expired": true, "resolved": true, "cancelled": true},
-	models.ItemRFS:      {"planned": true, "in_progress": true, "in_progress_field": true, "activated": true, "postponed": true, "cancelled": true},
+	models.ItemRFS:      {"new": true, "in_progress": true, "in_progress_field": true, "activated": true, "postponed": true, "cancelled": true},
 }
 
 type stateSet map[string]bool

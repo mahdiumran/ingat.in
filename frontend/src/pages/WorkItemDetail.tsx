@@ -14,6 +14,7 @@ import {
 } from '../components/ui'
 import { useAsync, useTagColors } from '../hooks'
 import { slaTone, formatDuration } from '../lib/format'
+import { rfsStartGate } from '../lib/rfs'
 import { statusTone } from '../design/tokens'
 
 type Toast = (kind: 'success' | 'error' | 'info' | 'warning', title: string, body?: string) => void
@@ -229,15 +230,30 @@ export function ItemDetail({
     })
   }
 
-  // ---- F23: aksi Aktivasi/EWO (In Progress, Troubleshoot, Close, Cancel, Delete) ----
-  async function rfsInProgress() {
+  // ---- F23: aksi Aktivasi/EWO (Mulai Kerjakan, Troubleshoot, Close, Cancel, Delete) ----
+  /**
+   * rfsStart memulai pengerjaan Aktivasi/EWO: new → in_progress.
+   *
+   * Hanya tersedia setelah jadwal RFS tiba; sebelum itu tombol nonaktif dan
+   * alasannya tampil pada tooltip. Backend menolak permintaan terlalu awal.
+   *
+   * RFS tanpa owner: penekan tombol sekaligus menjadi owner (dan tercatat
+   * sebagai penangan) karena status tidak boleh "in progress" tanpa penangan.
+   */
+  async function rfsStart() {
+    if (!item) return
     setBusy(true)
     try {
-      await workItemsApi.changeStatus(id, 'in_progress', 'In Progress')
-      toast('success', 'Status: In Progress')
+      if (!item.owner_username && user?.username) {
+        // assign() memajukan status ke in_progress karena jadwal sudah tiba.
+        await workItemsApi.assign(id, user.username)
+      } else {
+        await workItemsApi.rfsStart(id, 'Mulai kerjakan')
+      }
+      toast('success', 'RFS mulai dikerjakan', item.ref_no)
       detail.reload()
     } catch (err) {
-      toast('error', 'Gagal mengubah status', err instanceof Error ? err.message : undefined)
+      toast('error', 'Gagal memulai RFS', err instanceof Error ? err.message : undefined)
     } finally {
       setBusy(false)
     }
@@ -547,6 +563,13 @@ export function ItemDetail({
   const reassignUser = (users.data?.users ?? []).find((u) => u.username === reassign?.username)
   /** canTransition melaporkan apakah transisi ke status tertentu diizinkan. */
   const canTransition = (target: string) => nextStates.includes(target)
+  // RFS: tombol "Mulai Kerjakan" hanya aktif setelah jadwal tiba; "Close Ticket"
+  // baru tersedia setelah pengerjaan dimulai.
+  const rfsGate = rfsStartGate(item?.status, item?.expire_at, item?.rfs?.install_stage)
+  const rfsStarted =
+    !!item &&
+    item.item_type === 'rfs' &&
+    ['in_progress', 'in_progress_field', 'pending_troubleshoot'].includes(item.status)
 
   return (
     <div>
@@ -1490,15 +1513,36 @@ export function ItemDetail({
                   <div className="flex flex-wrap gap-2">
                     {item.item_type === 'rfs' && item.status !== 'activated' && item.status !== 'cancelled' && (
                       <>
-                        <button className="btn-secondary" onClick={rfsInProgress} disabled={busy}>
-                          <span className="material-symbols-outlined text-[18px]">play_arrow</span>
-                          In Progress
-                        </button>
+                        {/* Alur: new → Mulai Kerjakan → in_progress → Close Ticket → activated. */}
+                        {!rfsStarted ? (
+                          <button
+                            className="btn-brand"
+                            onClick={rfsStart}
+                            disabled={busy || !rfsGate.allowed}
+                            title={rfsGate.allowed ? 'Mulai kerjakan RFS (status menjadi In Progress)' : rfsGate.reason}
+                          >
+                            <span className="material-symbols-outlined text-[18px]">play_arrow</span>
+                            Mulai Kerjakan
+                          </button>
+                        ) : (
+                          <button className="btn-secondary" onClick={() => changeStatus('in_progress_field')} disabled={busy || !canTransition('in_progress_field')} title={canTransition('in_progress_field') ? 'Tandai penanganan lapangan' : 'Transisi tidak tersedia dari status ini'}>
+                            <span className="material-symbols-outlined text-[18px]">engineering</span>
+                            Penanganan Lapangan
+                          </button>
+                        )}
+                        {!rfsGate.allowed && !rfsStarted && (
+                          <p className="basis-full text-label-sm text-text-secondary">{rfsGate.reason}.</p>
+                        )}
                         <button className="btn-secondary" onClick={() => changeStatus('pending_troubleshoot')} disabled={busy || !canTransition('pending_troubleshoot')}>
                           <span className="material-symbols-outlined text-[18px]">handyman</span>
                           Troubleshoot
                         </button>
-                        <button className="btn-brand" onClick={rfsCloseTicket} disabled={busy}>
+                        <button
+                          className="btn-brand"
+                          onClick={rfsCloseTicket}
+                          disabled={busy || !rfsStarted}
+                          title={rfsStarted ? 'Tutup RFS: Closed/Completed' : 'Mulai kerjakan RFS dulu sebelum menutup tiket'}
+                        >
                           <span className="material-symbols-outlined text-[18px]">task_alt</span>
                           Close Ticket
                         </button>

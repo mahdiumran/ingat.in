@@ -150,6 +150,21 @@ type Workflow struct {
 	Transitions    map[string][]string
 	InitialState   string
 	TerminalStates []string
+	// LegacyStates adalah status lama yang masih mungkin tersimpan pada baris
+	// data sebelum migrasi, tetapi tidak lagi ditampilkan sebagai bagian alur.
+	// Status ini tetap dianggap sah dan diperlakukan sama dengan InitialState
+	// agar item lama tidak "terkunci" (mis. rfs `planned` → `new`).
+	LegacyStates []string
+}
+
+// normalizeState memetakan status legacy ke state penggantinya.
+func (w *Workflow) normalizeState(state string) string {
+	for _, s := range w.LegacyStates {
+		if s == state {
+			return w.InitialState
+		}
+	}
+	return state
 }
 
 // TransitionResult menjelaskan hasil evaluasi transisi.
@@ -160,7 +175,15 @@ type TransitionResult struct {
 }
 
 // CanTransition memeriksa apakah perpindahan from -> to diizinkan.
+//
+// Status legacy (lihat LegacyStates) diperlakukan sama dengan InitialState
+// sehingga item lama tetap dapat melanjutkan alur tanpa migrasi ulang.
 func (w *Workflow) CanTransition(from, to string) bool {
+	if from == to {
+		return true
+	}
+	from = w.normalizeState(from)
+	to = w.normalizeState(to)
 	if from == to {
 		return true
 	}
@@ -182,6 +205,8 @@ func (w *Workflow) EvaluateTransitions(from, to string) TransitionResult {
 	if !res.Allowed {
 		return res
 	}
+	from = w.normalizeState(from)
+	to = w.normalizeState(to)
 	for _, s := range w.TerminalStates {
 		if s == to {
 			res.IsClosing = true
@@ -194,6 +219,9 @@ func (w *Workflow) EvaluateTransitions(from, to string) TransitionResult {
 }
 
 // IsValidState melaporkan apakah state termasuk daftar state workflow.
+//
+// Status legacy (LegacyStates) TIDAK dianggap sah untuk penulisan baru; ia
+// hanya diterima saat membaca data lama dan saat menjadi status asal transisi.
 func (w *Workflow) IsValidState(state string) bool {
 	for _, s := range w.States {
 		if s == state {
@@ -237,21 +265,31 @@ func DefaultWorkflows() map[string]*Workflow {
 			},
 			TerminalStates: []string{"resolved", "expired", "cancelled"},
 		},
+		// Alur Aktivasi/EWO:
+		//   new  → dibuat admin/sales (belum dikerjakan, jadwal belum tentu tiba)
+		//   in_progress → penangan menekan "Mulai Kerjakan" setelah jadwal tiba
+		//   activated   → penangan menekan "Close Ticket" (Closed/Completed)
+		//
+		// `planned` tidak lagi dipakai sebagai status (diganti `new`); nilai itu
+		// kini hanya dikenal sebagai tahap instalasi (rfs_details.install_stage).
+		// Baris lama berstatus `planned` tetap dapat melanjutkan alur karena
+		// diperlakukan setara `new` (lihat LegacyStates).
 		"rfs": {
 			ItemType:     "rfs",
 			Name:         "Alur RFS Standar",
-			States:       []string{"planned", "in_progress", "in_progress_field", "pending_troubleshoot", "activated", "postponed", "cancelled"},
-			InitialState: "planned",
+			States:       []string{"new", "in_progress", "in_progress_field", "pending_troubleshoot", "activated", "postponed", "cancelled"},
+			InitialState: "new",
 			Transitions: map[string][]string{
-				"planned":              {"in_progress", "postponed", "cancelled"},
+				"new":                  {"in_progress", "postponed", "cancelled"},
 				"in_progress":          {"in_progress_field", "pending_troubleshoot", "activated", "postponed", "cancelled"},
 				"in_progress_field":    {"pending_troubleshoot", "activated", "postponed", "cancelled"},
 				"pending_troubleshoot": {"in_progress", "in_progress_field", "activated", "postponed", "cancelled"},
 				"activated":            {},
-				"postponed":            {"planned", "in_progress", "cancelled"},
+				"postponed":            {"new", "in_progress", "cancelled"},
 				"cancelled":            {},
 			},
 			TerminalStates: []string{"activated", "cancelled"},
+			LegacyStates:   []string{"planned"},
 		},
 		"incident": {
 			ItemType:     "incident",

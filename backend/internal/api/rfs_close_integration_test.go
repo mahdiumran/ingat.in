@@ -1,16 +1,19 @@
 //go:build integration
 
-// Uji integrasi penutupan Aktivasi/EWO (RFS) dan kemajuan status otomatis saat
-// seorang penangan mulai mengerjakan.
+// Uji integrasi alur status Aktivasi/EWO (RFS):
+//
+//	new → Mulai Kerjakan (setelah jadwal tiba) → in_progress → Close Ticket → activated
 //
 // Regresi yang dijaga:
 //
 //  1. "Close Ticket" dulu hanya menyimpan tahap instalasi lalu gagal diam-diam
-//     memindahkan status; RFS yang masih `planned` tetap `planned` walau sudah
-//     diaktivasi (UI menampilkan Closed/Completed dari tahap, backend planned).
+//     memindahkan status; RFS yang masih di status awal tetap di status awal
+//     walau sudah diaktivasi (UI menampilkan Closed/Completed dari tahap).
 //
-//  2. Ikut menangani tiket/RFS yang masih di state awal tidak memajukan status,
-//     sehingga pekerjaan berjalan tanpa status "in progress".
+//  2. Ikut menangani RFS yang masih di status awal tidak memajukan status.
+//
+//  3. Tombol "Mulai Kerjakan" tidak boleh dipakai sebelum jadwal (expire_at)
+//     tiba, baik lewat /rfs-start maupun jalur generik /status.
 //
 //     export INGATIN_DB_URL='postgres://ingatin:<pw>@127.0.0.1:5432/ingatin_test?sslmode=disable'
 //     go test -tags=integration ./internal/api/... -run TestRFSClose -v
@@ -22,6 +25,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -57,7 +61,7 @@ func TestRFSCloseAndJoinStatus(t *testing.T) {
 	noc1 := newUser("it_n1_"+suffix, models.RoleNOC)
 	noc2 := newUser("it_n2_"+suffix, models.RoleNOC)
 
-	created := make([]uuid.UUID, 0, 3)
+	created := make([]uuid.UUID, 0, 4)
 	t.Cleanup(func() {
 		p := store.Pool()
 		for _, id := range created {
@@ -70,7 +74,9 @@ func TestRFSCloseAndJoinStatus(t *testing.T) {
 	})
 
 	seq := 0
-	newRFS := func(owner, status string) *models.WorkItem {
+	// newRFS membuat RFS dengan status dan jadwal (expire_at) tertentu.
+	// expireAt nil berarti RFS tanpa jadwal.
+	newRFS := func(owner, status string, expireAt *time.Time) *models.WorkItem {
 		t.Helper()
 		seq++
 		var wi *models.WorkItem
@@ -83,6 +89,7 @@ func TestRFSCloseAndJoinStatus(t *testing.T) {
 				Priority:      "normal",
 				Status:        status,
 				OwnerUsername: owner,
+				ExpireAt:      expireAt,
 				CreatedBy:     sales.Username,
 			})
 			if err != nil {
@@ -106,59 +113,111 @@ func TestRFSCloseAndJoinStatus(t *testing.T) {
 			strings.NewReader(`{"reason":"selesai uji"}`))
 		return callHandler(t, r, u, id, s.handleRFSClose)
 	}
+	startRFS := func(u *models.User, id uuid.UUID) int {
+		t.Helper()
+		r := httptest.NewRequest(http.MethodPost, "/api/items/"+id.String()+"/rfs-start",
+			strings.NewReader(`{"note":"mulai uji"}`))
+		return callHandler(t, r, u, id, s.handleRFSStart)
+	}
 	joinRFS := func(u *models.User, id uuid.UUID) int {
 		t.Helper()
 		body := strings.NewReader(`{"username":"` + u.Username + `"}`)
 		r := httptest.NewRequest(http.MethodPost, "/api/items/"+id.String()+"/collaborators", body)
 		return callHandler(t, r, u, id, s.handleAddCollaborator)
 	}
-
-	// --- Kasus 1: close dari planned harus menjadi activated. ---
-	planned := newRFS(sales.Username, "planned")
-	if code := closeRFS(noc1, planned.ID); code != http.StatusOK {
-		t.Fatalf("tutup RFS dari planned: got %d, want 200", code)
+	statusOf := func(id uuid.UUID) string {
+		t.Helper()
+		got, err := store.GetWorkItem(ctx, id)
+		if err != nil {
+			t.Fatalf("baca item: %v", err)
+		}
+		return got.Status
 	}
-	got, err := store.GetWorkItem(ctx, planned.ID)
+
+	past := time.Now().UTC().Add(-2 * time.Hour)
+	future := time.Now().UTC().Add(72 * time.Hour)
+
+	// --- Kasus 1: alur normal new → in_progress → activated. ---
+	open := newRFS(sales.Username, "new", &past)
+	if code := startRFS(noc1, open.ID); code != http.StatusOK {
+		t.Fatalf("mulai kerjakan RFS: got %d, want 200", code)
+	}
+	if got := statusOf(open.ID); got != "in_progress" {
+		t.Fatalf("status setelah Mulai Kerjakan = %q, want in_progress", got)
+	}
+	// Mulai ulang idempoten.
+	if code := startRFS(noc1, open.ID); code != http.StatusOK {
+		t.Fatalf("mulai ulang RFS: got %d, want 200", code)
+	}
+	if code := closeRFS(noc1, open.ID); code != http.StatusOK {
+		t.Fatalf("tutup RFS: got %d, want 200", code)
+	}
+	closed, err := store.GetWorkItem(ctx, open.ID)
 	if err != nil {
 		t.Fatalf("baca item: %v", err)
 	}
-	if got.Status != "activated" {
-		t.Fatalf("status setelah close = %q, want activated (dulu tertinggal planned)", got.Status)
+	if closed.Status != "activated" {
+		t.Fatalf("status setelah close = %q, want activated", closed.Status)
 	}
-	if got.RFS == nil || got.RFS.InstallStage != models.RFSStageActivated {
-		t.Fatalf("install_stage setelah close = %+v, want activated", got.RFS)
+	if closed.RFS == nil || closed.RFS.InstallStage != models.RFSStageActivated {
+		t.Fatalf("install_stage setelah close = %+v, want activated", closed.RFS)
 	}
-	if got.ClosedAt == nil {
+	if closed.ClosedAt == nil {
 		t.Error("closed_at tidak diisi saat RFS ditutup")
 	}
-
 	// Close ulang idempoten (200, tanpa duplikasi masalah).
-	if code := closeRFS(noc1, planned.ID); code != http.StatusOK {
+	if code := closeRFS(noc1, open.ID); code != http.StatusOK {
 		t.Fatalf("tutup ulang RFS: got %d, want 200", code)
 	}
 
-	// --- Kasus 2: ikut menangani memajukan status planned → in_progress. ---
-	open := newRFS(sales.Username, "planned")
-	if code := joinRFS(noc2, open.ID); code != http.StatusOK {
+	// --- Kasus 2: jadwal belum tiba → Mulai Kerjakan ditolak. ---
+	early := newRFS(sales.Username, "new", &future)
+	if code := startRFS(noc1, early.ID); code != http.StatusConflict {
+		t.Fatalf("mulai sebelum jadwal: got %d, want 409", code)
+	}
+	if got := statusOf(early.ID); got != "new" {
+		t.Fatalf("status setelah mulai ditolak = %q, want tetap new", got)
+	}
+	// Jalur generik /status juga dijaga.
+	r := httptest.NewRequest(http.MethodPost, "/api/items/"+early.ID.String()+"/status",
+		strings.NewReader(`{"status":"in_progress","note":"coba"}`))
+	if code := callHandler(t, r, noc1, early.ID, s.handleChangeStatus); code != http.StatusConflict {
+		t.Fatalf("status generik sebelum jadwal: got %d, want 409", code)
+	}
+	if got := statusOf(early.ID); got != "new" {
+		t.Fatalf("status setelah /status ditolak = %q, want tetap new", got)
+	}
+	// Ikut menangani sebelum jadwal hanya mencatat penangan.
+	if code := joinRFS(noc2, early.ID); code != http.StatusOK {
 		t.Fatalf("ikut menangani RFS: got %d, want 200", code)
 	}
-	got, err = store.GetWorkItem(ctx, open.ID)
-	if err != nil {
-		t.Fatalf("baca item: %v", err)
+	if got := statusOf(early.ID); got != "new" {
+		t.Fatalf("status setelah ikut menangani sebelum jadwal = %q, want tetap new", got)
 	}
-	if got.Status != "in_progress" {
-		t.Fatalf("status setelah ikut menangani = %q, want in_progress", got.Status)
+
+	// --- Kasus 3: ikut menangani setelah jadwal tiba memajukan status. ---
+	ready := newRFS(sales.Username, "new", &past)
+	if code := joinRFS(noc2, ready.ID); code != http.StatusOK {
+		t.Fatalf("ikut menangani RFS: got %d, want 200", code)
+	}
+	if got := statusOf(ready.ID); got != "in_progress" {
+		t.Fatalf("status setelah ikut menangani = %q, want in_progress", got)
 	}
 
 	// RFS yang sudah ditutup tidak dibuka kembali oleh self-join.
-	if code := joinRFS(noc2, planned.ID); code != http.StatusOK {
+	if code := joinRFS(noc2, open.ID); code != http.StatusOK {
 		t.Fatalf("ikut menangani RFS tertutup: got %d, want 200", code)
 	}
-	got, err = store.GetWorkItem(ctx, planned.ID)
-	if err != nil {
-		t.Fatalf("baca item: %v", err)
+	if got := statusOf(open.ID); got != "activated" {
+		t.Fatalf("status RFS tertutup berubah menjadi %q, want tetap activated", got)
 	}
-	if got.Status != "activated" {
-		t.Fatalf("status RFS tertutup berubah menjadi %q, want tetap activated", got.Status)
+
+	// --- Kasus 4: RFS tanpa jadwal boleh langsung dimulai (tidak diblokir). ---
+	noSchedule := newRFS(sales.Username, "new", nil)
+	if code := startRFS(noc1, noSchedule.ID); code != http.StatusOK {
+		t.Fatalf("mulai RFS tanpa jadwal: got %d, want 200", code)
+	}
+	if got := statusOf(noSchedule.ID); got != "in_progress" {
+		t.Fatalf("status RFS tanpa jadwal = %q, want in_progress", got)
 	}
 }

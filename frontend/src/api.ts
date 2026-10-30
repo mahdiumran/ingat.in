@@ -721,6 +721,13 @@ export const workItemsApi = {
 
   remove: (id: string) => request<{ ok: boolean }>(`/items/${id}`, { method: 'DELETE' }),
 
+  /** Mulai kerjakan Aktivasi/EWO (new → in_progress), hanya setelah jadwal tiba. */
+  rfsStart: (id: string, note = '') =>
+    request<WorkItem>(`/items/${id}/rfs-start`, {
+      method: 'POST',
+      body: JSON.stringify({ note }),
+    }),
+
   /** Tutup Aktivasi/EWO: status activated (Closed/Completed) + tahap aktivasi. */
   rfsClose: (id: string, reason = '') =>
     request<WorkItem>(`/items/${id}/rfs-close`, {

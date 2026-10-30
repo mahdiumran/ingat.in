@@ -94,12 +94,19 @@ func TestWorkflowRFSHasActivatePath(t *testing.T) {
 	if wf == nil {
 		t.Fatal("workflow rfs tidak ditemukan")
 	}
-	// Alur "Tandai Aktif" harus tercapai dari planned.
-	if !wf.CanTransition("planned", "in_progress") {
-		t.Error("rfs planned -> in_progress harus diizinkan")
+	// Alur Aktivasi/EWO: new → in_progress → activated.
+	if wf.InitialState != "new" {
+		t.Errorf("status awal rfs = %q, want new", wf.InitialState)
+	}
+	if !wf.CanTransition("new", "in_progress") {
+		t.Error("rfs new -> in_progress harus diizinkan")
 	}
 	if !wf.CanTransition("in_progress", "activated") {
 		t.Error("rfs in_progress -> activated harus diizinkan")
+	}
+	// new tidak boleh langsung activated (harus lewat Mulai Kerjakan).
+	if wf.CanTransition("new", "activated") {
+		t.Error("rfs new -> activated seharusnya DITOLAK (harus lewat in_progress)")
 	}
 	if len(wf.Transitions["activated"]) != 0 {
 		t.Error("activated harus terminal (tanpa transisi keluar)")
@@ -107,6 +114,28 @@ func TestWorkflowRFSHasActivatePath(t *testing.T) {
 	res := wf.EvaluateTransitions("in_progress", "activated")
 	if !res.Allowed || !res.IsClosing {
 		t.Errorf("rfs -> activated harus closing, got allowed=%v closing=%v", res.Allowed, res.IsClosing)
+	}
+}
+
+// TestWorkflowRFSLegacyPlanned memastikan RFS lama berstatus `planned` (sebelum
+// migrasi 00032) tetap dapat melanjutkan alur seperti `new`, tetapi `planned`
+// tidak lagi sah sebagai status tujuan penulisan baru.
+func TestWorkflowRFSLegacyPlanned(t *testing.T) {
+	wf := WorkflowFor("rfs")
+	if wf == nil {
+		t.Fatal("workflow rfs tidak ditemukan")
+	}
+	if !wf.CanTransition("planned", "in_progress") {
+		t.Error("rfs planned (legacy) -> in_progress harus tetap diizinkan")
+	}
+	if !wf.CanTransition("planned", "postponed") {
+		t.Error("rfs planned (legacy) -> postponed harus tetap diizinkan")
+	}
+	if wf.IsValidState("planned") {
+		t.Error("planned tidak boleh lagi sah sebagai status baru")
+	}
+	if !wf.IsValidState("new") {
+		t.Error("new harus sah sebagai status rfs")
 	}
 }
 

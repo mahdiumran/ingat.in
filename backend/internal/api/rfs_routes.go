@@ -30,6 +30,144 @@ type rfsCloseRequest struct {
 	Reason string `json:"reason"`
 }
 
+// rfsStartRequest adalah body POST /api/items/{id}/rfs-start.
+type rfsStartRequest struct {
+	// Note opsional; dicatat pada event mulai dikerjakan.
+	Note string `json:"note"`
+}
+
+// rfsStartGate memeriksa apakah RFS boleh masuk status "in progress".
+//
+// Aturan produk: RFS baru (status `new`) baru boleh mulai dikerjakan setelah
+// jadwalnya tiba (expire_at) DAN penangan menekan tombol "Mulai Kerjakan".
+// Fungsi mengembalikan jadwal (zona WIB) bila belum waktunya.
+func rfsStartGate(item *models.WorkItem, now time.Time) (time.Time, bool) {
+	if item == nil || item.ItemType != models.ItemRFS {
+		return time.Time{}, false
+	}
+	// Hanya state awal yang dibatasi jadwal. `planned` adalah status legacy
+	// (sebelum migrasi 00032) yang tetap diperlakukan sebagai "belum mulai".
+	if item.Status != "new" && item.Status != "planned" {
+		return time.Time{}, false
+	}
+	if item.ExpireAt == nil {
+		return time.Time{}, false
+	}
+	if !now.Before(*item.ExpireAt) {
+		return time.Time{}, false
+	}
+	return item.ExpireAt.In(wibLocation), true
+}
+
+// rfsStartGateMessage menyusun pesan penolakan saat jadwal RFS belum tiba.
+func rfsStartGateMessage(at time.Time) string {
+	return "RFS dijadwalkan " + at.Format("02 Jan 2006 15:04 MST") +
+		"; tombol Mulai Kerjakan baru aktif setelah jadwal tiba"
+}
+
+// handleRFSStart memulai pengerjaan Aktivasi/EWO: status `new` menjadi
+// `in_progress` (bukan langsung activated).
+//
+// POST /api/items/{id}/rfs-start
+//
+// Hanya boleh dipanggil setelah jadwal RFS (expire_at) tiba; sebelum itu
+// permintaan ditolak 409 agar status tidak melompat sebelum waktunya.
+// Idempoten: RFS yang sudah in_progress/in_progress_field dikembalikan apa
+// adanya tanpa mengubah apa pun.
+func (s *Server) handleRFSStart(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.itemID(w, r)
+	if !ok {
+		return
+	}
+	var req rfsStartRequest
+	if r.ContentLength > 0 {
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+	}
+
+	item, err := s.store.GetWorkItem(r.Context(), id)
+	if err != nil {
+		s.itemError(w, err)
+		return
+	}
+	if item.ItemType != models.ItemRFS {
+		writeErr(w, http.StatusBadRequest, "aksi ini hanya berlaku untuk Aktivasi/EWO (RFS)")
+		return
+	}
+	if !s.canModifyItem(r, userFrom(r), item) {
+		writeErr(w, http.StatusForbidden, "tidak berhak memulai RFS ini")
+		return
+	}
+	// Sudah dikerjakan: tidak ada yang perlu diubah.
+	if item.Status == "in_progress" || item.Status == "in_progress_field" {
+		writeJSON(w, http.StatusOK, item)
+		return
+	}
+	if item.Status == "activated" || item.Status == "cancelled" {
+		writeErr(w, http.StatusConflict, "RFS sudah ditutup atau dibatalkan")
+		return
+	}
+
+	now := time.Now().UTC()
+	if at, blocked := rfsStartGate(item, now); blocked {
+		writeErr(w, http.StatusConflict, rfsStartGateMessage(at))
+		return
+	}
+
+	wf := workitems.WorkflowFor(models.ItemRFS)
+	if wf == nil || !wf.CanTransition(item.Status, "in_progress") {
+		writeErr(w, http.StatusConflict,
+			"transisi status dari "+item.Status+" ke in_progress tidak diizinkan")
+		return
+	}
+
+	actor := currentUsername(r)
+	note := strings.TrimSpace(req.Note)
+	if note == "" {
+		note = "Mulai dikerjakan"
+	}
+
+	fields := map[string]any{
+		"status":              "in_progress",
+		"updated_by_username": actor,
+	}
+	if item.FirstResponseAt == nil && item.Status != wf.InitialState {
+		fields["first_response_at"] = now
+	}
+
+	err = s.store.Tx(r.Context(), func(tx pgx.Tx) error {
+		if err := s.store.UpdateWorkItemFields(r.Context(), tx, id, fields); err != nil {
+			return err
+		}
+		return workitems.AppendEvent(r.Context(), tx, workitems.EventInput{
+			WorkItemID: id.String(),
+			EventType:  workitems.EventStatusChanged,
+			Actor:      actor,
+			FromValue:  item.Status,
+			ToValue:    "in_progress",
+			Detail:     map[string]any{"note": note},
+		})
+	})
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	s.audit(r, actor, "rfs.start", "work_item", id.String(), map[string]any{
+		"ref_no": item.RefNo, "from": item.Status, "to": "in_progress", "note": note,
+	}, true)
+	s.syncSheet(r, item, "status_changed")
+	s.maybeSendRFSSummary(r.Context(), now)
+
+	updated, err := s.store.GetWorkItem(r.Context(), id)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
 // canCancelRFS melaporkan apakah user boleh membatalkan RFS.
 //
 // Aturan: admin (super) & manager (tim admin) selalu boleh; role sales hanya
@@ -132,10 +270,10 @@ func (s *Server) handleRFSCancel(w http.ResponseWriter, r *http.Request) {
 // POST /api/items/{id}/rfs-close
 //
 // Kenapa endpoint khusus: tombol "Close Ticket" dulu melakukan PATCH tahap lalu
-// POST /status. Bila RFS masih `planned`, transisi planned → activated tidak
-// sah menurut workflow sehingga status tetap planned walau tahap instalasi
-// sudah activated (UI menampilkan "Closed / Completed" dari tahap, backend
-// tetap planned). Endpoint ini menutup lewat jalur sah: planned → in_progress
+// POST /status. Dengan workflow lama, transisi langsung ke activated dari
+// status awal tidak sah menurut workflow sehingga status tetap di status awal
+// walau tahap instalasi sudah activated (UI menampilkan "Closed / Completed"
+// dari tahap). Endpoint ini menutup lewat jalur sah: new → in_progress
 // → activated, lalu memaksa status akhir agar konsisten.
 func (s *Server) handleRFSClose(w http.ResponseWriter, r *http.Request) {
 	id, ok := s.itemID(w, r)

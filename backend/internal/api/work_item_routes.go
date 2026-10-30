@@ -1137,6 +1137,16 @@ func (s *Server) handleChangeStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// RFS: status awal (`new`) hanya boleh maju ke in_progress setelah jadwal
+	// tiba. Tombol "Mulai Kerjakan" memakai endpoint /rfs-start, tetapi jalur
+	// generik ini juga dijaga agar aturan jadwal tidak bisa dilewati.
+	if item.ItemType == models.ItemRFS && req.Status == "in_progress" {
+		if at, blocked := rfsStartGate(item, time.Now().UTC()); blocked {
+			writeErr(w, http.StatusConflict, rfsStartGateMessage(at))
+			return
+		}
+	}
+
 	result := wf.EvaluateTransitions(item.Status, req.Status)
 	if !result.Allowed {
 		writeErr(w, http.StatusConflict, "transisi status dari "+item.Status+" ke "+req.Status+" tidak diizinkan")

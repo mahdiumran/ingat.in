@@ -30,10 +30,13 @@ func TestTicketClaimStatus(t *testing.T) {
 		{"request", "in_progress", ""},
 		{"change", "implementing", ""},
 
-		// RFS (Aktivasi/EWO): planned/postponed yang mulai dikerjakan tidak
-		// boleh tertinggal di planned.
-		{"rfs", "planned", "in_progress"},
+		// RFS (Aktivasi/EWO): status awal `new` (atau `postponed`) yang mulai
+		// dikerjakan tidak boleh tertinggal di status awal.
+		{"rfs", "new", "in_progress"},
 		{"rfs", "postponed", "in_progress"},
+		// `planned` adalah status legacy (sebelum migrasi 00032) yang tetap
+		// diperlakukan sebagai belum mulai.
+		{"rfs", "planned", "in_progress"},
 		{"rfs", "in_progress", ""},
 		{"rfs", "in_progress_field", ""},
 		// State terminal RFS tidak pernah dimajukan otomatis.

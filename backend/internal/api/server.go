@@ -158,7 +158,8 @@ func (s *Server) Handler() http.Handler {
 			pr.Post("/items/{id}/collaborators", s.handleAddCollaborator)
 			pr.Delete("/items/{id}/collaborators/{username}", s.handleRemoveCollaborator)
 
-			// F23: Aktivasi/EWO (RFS) — tutup, cancel & delete ber-alasan.
+			// F23: Aktivasi/EWO (RFS) — mulai, tutup, cancel & delete ber-alasan.
+			pr.Post("/items/{id}/rfs-start", s.handleRFSStart)
 			pr.Post("/items/{id}/rfs-close", s.handleRFSClose)
 			pr.Post("/items/{id}/rfs-cancel", s.handleRFSCancel)
 			pr.Post("/items/{id}/rfs-delete", s.handleRFSDelete)

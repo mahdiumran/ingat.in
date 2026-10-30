@@ -164,7 +164,7 @@ type OpenRFSSummaryItem struct {
 
 // OpenRFSSummary mengelompokkan RFS belum selesai.
 type OpenRFSSummary struct {
-	Planned    []OpenRFSSummaryItem // planned + postponed
+	Planned    []OpenRFSSummaryItem // new + planned (legacy) + postponed
 	InProgress []OpenRFSSummaryItem // in_progress + in_progress_field
 	Pending    []OpenRFSSummaryItem // pending_troubleshoot
 }
@@ -242,7 +242,7 @@ func GroupRFSSummary(rows []RFSSummaryRow) OpenRFSSummary {
 		case "pending_troubleshoot":
 			out.Pending = append(out.Pending, it)
 		default:
-			// planned, postponed, dan status tak dikenal lain.
+			// new, planned (legacy), postponed, dan status tak dikenal lain.
 			out.Planned = append(out.Planned, it)
 		}
 	}

@@ -99,13 +99,16 @@ export const statusTone: Record<string, string> = {
   expiring: 'bg-warning-container text-on-warning-container border-outline-variant',
   expired: 'bg-critical-container text-on-critical-container border-outline-variant',
   // rfs
+  // `new` = RFS baru dibuat admin/sales, belum dikerjakan (status awal).
+  new: 'bg-info-container text-on-info-container border-outline-variant',
+  // `planned` = status legacy sebelum migrasi 00032; dipertahankan agar RFS
+  // lama tetap tampil dengan warna yang benar.
   planned: 'bg-info-container text-on-info-container border-outline-variant',
   in_progress_field: 'bg-primary-container text-on-primary-container border-outline-variant',
   pending_troubleshoot: 'bg-warning-container text-on-warning-container border-outline-variant',
   activated: 'bg-success-container text-on-success-container border-outline-variant',
   postponed: 'bg-warning-container text-on-warning-container border-outline-variant',
   // ticket (F10)
-  new: 'bg-info-container text-on-info-container border-outline-variant',
   assigned: 'bg-primary-container text-on-primary-container border-outline-variant',
   pending_customer: 'bg-warning-container text-on-warning-container border-outline-variant',
   resolved: 'bg-success-container text-on-success-container border-outline-variant',
@@ -118,6 +121,8 @@ export const statusTone: Record<string, string> = {
 
 /** statusLabel memberi label manusiawi; fallback ganti "_" dengan spasi. */
 export const STATUS_LABELS: Record<string, string> = {
+  // rfs
+  new: 'New',
   planned: 'Planned',
   in_progress: 'In Progress',
   in_progress_field: 'Penanganan Lapangan',
