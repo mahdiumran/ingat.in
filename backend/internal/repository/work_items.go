@@ -171,11 +171,11 @@ func (s *Store) loadExtensions(ctx context.Context, wi *models.WorkItem) error {
 		err := s.pool.QueryRow(ctx, `
 			SELECT customer_name, service_id, service_package, bandwidth,
 			       pic_noc, pic_sales, pic_team_id, sales_username, site, install_stage,
-			       issue_found, troubleshooting, action_solution
+			       category_code, category_label, issue_found, troubleshooting, action_solution
 			FROM rfs_details WHERE work_item_id=$1`, wi.ID,
 		).Scan(&d.CustomerName, &d.ServiceID, &d.ServicePackage, &d.Bandwidth,
 			&d.PicNOC, &d.PicSales, &d.PicTeamID, &d.SalesUsername, &d.Site, &d.InstallStage,
-			&d.IssueFound, &d.Troubleshooting, &d.ActionSolution)
+			&d.CategoryCode, &d.CategoryLabel, &d.IssueFound, &d.Troubleshooting, &d.ActionSolution)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}

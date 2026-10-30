@@ -413,7 +413,7 @@ func TestExtensionWritePath(t *testing.T) {
 			itemType: models.ItemTask,
 			create: func(tx pgx.Tx, id uuid.UUID) error {
 				return store.CreateTaskDetails(ctx, tx, id,
-					[]models.ChecklistItem{{Text: "cek peer", Done: false}}, nil)
+					[]models.ChecklistItem{{Text: "cek peer", Done: false}}, nil, "")
 			},
 			verify: func(t *testing.T, wi *models.WorkItem) {
 				if wi.Task == nil {

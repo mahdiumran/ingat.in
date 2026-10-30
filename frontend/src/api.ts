@@ -421,6 +421,9 @@ export type WorkItem = {
     pic_sales: string
     // F25: PIC berupa tim.
     pic_team_id?: string
+    // F45: snapshot kategori EWO (Master Data kind `ewo_category`).
+    category_code?: string
+    category_label?: string
     site: string
     install_stage: string
     // F23: catatan penanganan (modal Troubleshoot).
@@ -1172,6 +1175,19 @@ export const ticketSummaryApi = {
       body: JSON.stringify(payload),
     }),
   preview: () => request<{ ok: boolean; added: number }>('/settings/ticket-summary/preview', { method: 'POST' }),
+}
+
+/* F45 — Ringkasan Aktivasi/EWO (RFS) terbuka (setting identik ticket summary). */
+export type RFSSummarySettings = DailySummarySettings
+
+export const rfsSummaryApi = {
+  get: () => request<RFSSummarySettings>('/settings/rfs-summary'),
+  save: (payload: { mode: string; interval_minutes?: number }) =>
+    request<RFSSummarySettings>('/settings/rfs-summary', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  preview: () => request<{ ok: boolean; added: number }>('/settings/rfs-summary/preview', { method: 'POST' }),
 }
 
 /* ------------------------------------------------------------------------- */

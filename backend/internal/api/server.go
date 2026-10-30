@@ -184,6 +184,7 @@ func (s *Server) Handler() http.Handler {
 			// (baca untuk semua; tulis admin).
 			pr.Get("/settings/daily-summary", s.handleGetDailySummarySettings)
 			pr.Get("/settings/ticket-summary", s.handleGetTicketSummarySettings)
+			pr.Get("/settings/rfs-summary", s.handleGetRFSSummarySettings)
 
 			// F12: master data (baca untuk semua; tulis dijaga izin masterdata.write)
 			pr.Get("/master-data", s.handleListMasterData)
@@ -244,6 +245,8 @@ func (s *Server) Handler() http.Handler {
 			ar.Post("/settings/daily-summary/preview", s.handlePreviewDailySummary)
 			ar.Post("/settings/ticket-summary", s.handleSetTicketSummarySettings)
 			ar.Post("/settings/ticket-summary/preview", s.handlePreviewTicketSummary)
+			ar.Post("/settings/rfs-summary", s.handleSetRFSSummarySettings)
+			ar.Post("/settings/rfs-summary/preview", s.handlePreviewRFSSummary)
 
 			// F3/F4: konfigurasi notifikasi (admin & noc)
 			ar.Post("/providers", s.handleCreateProvider)

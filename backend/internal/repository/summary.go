@@ -145,3 +145,119 @@ func (s *Store) ListOpenTicketSummary(ctx context.Context) (OpenTicketSummary, e
 func (d OpenTicketSummary) Total() int {
 	return len(d.New) + len(d.Progress) + len(d.Done)
 }
+
+/* ---------------------------------------------------------------------------
+   F45 — Ringkasan Aktivasi/EWO (RFS) yang belum aktif/batal.
+   --------------------------------------------------------------------------- */
+
+// OpenRFSSummaryItem adalah satu baris RFS pada ringkasan.
+type OpenRFSSummaryItem struct {
+	RefNo    string
+	Title    string
+	Customer string
+	Category string
+	Owner    string
+	Schedule *time.Time
+	Overdue  bool
+	Tags     []string
+}
+
+// OpenRFSSummary mengelompokkan RFS belum selesai.
+type OpenRFSSummary struct {
+	Planned    []OpenRFSSummaryItem // planned + postponed
+	InProgress []OpenRFSSummaryItem // in_progress + in_progress_field
+	Pending    []OpenRFSSummaryItem // pending_troubleshoot
+}
+
+// Total mengembalikan jumlah seluruh RFS pada ringkasan.
+func (d OpenRFSSummary) Total() int {
+	return len(d.Planned) + len(d.InProgress) + len(d.Pending)
+}
+
+// ListOpenRFSSummary mengambil seluruh RFS aktif (bukan activated/cancelled).
+// Terlambat dihitung dari expire_at (jadwal RFS) yang sudah lewat.
+//
+// Owner/PIC memakai urutan: owner item -> nama tim PIC -> pic_noc -> pic_sales.
+func (s *Store) ListOpenRFSSummary(ctx context.Context) (OpenRFSSummary, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT wi.ref_no, wi.title, COALESCE(rd.customer_name, ''),
+		       COALESCE(NULLIF(rd.category_label, ''), NULLIF(rd.category_code, ''), ''),
+		       COALESCE(NULLIF(wi.owner_username, ''), NULLIF(t.name, ''),
+		                NULLIF(rd.pic_noc, ''), NULLIF(rd.pic_sales, ''), ''),
+		       wi.status,
+		       wi.expire_at,
+		       (wi.expire_at IS NOT NULL AND wi.expire_at < now()) AS overdue,
+		       COALESCE(wi.tags, '[]'::jsonb)
+		FROM work_items wi
+		LEFT JOIN rfs_details rd ON rd.work_item_id = wi.id
+		LEFT JOIN teams t ON t.id = rd.pic_team_id
+		WHERE NOT wi.is_deleted
+		  AND wi.item_type = 'rfs'
+		  AND wi.status NOT IN ('activated', 'cancelled')
+		ORDER BY wi.expire_at NULLS LAST, wi.ref_no`)
+	if err != nil {
+		return OpenRFSSummary{}, err
+	}
+	defer rows.Close()
+
+	scanRows := []RFSSummaryRow{}
+	for rows.Next() {
+		var r RFSSummaryRow
+		if err := rows.Scan(&r.RefNo, &r.Title, &r.Customer, &r.Category,
+			&r.Owner, &r.Status, &r.Schedule, &r.Overdue, &r.Tags); err != nil {
+			return OpenRFSSummary{}, err
+		}
+		scanRows = append(scanRows, r)
+	}
+	if err := rows.Err(); err != nil {
+		return OpenRFSSummary{}, err
+	}
+	return GroupRFSSummary(scanRows), nil
+}
+
+// GroupRFSSummary memindahkan baris ke kelompok yang tepat sesuai status.
+// Dipisah dari query agar pengelompokan dapat diuji tanpa database.
+func GroupRFSSummary(rows []RFSSummaryRow) OpenRFSSummary {
+	out := OpenRFSSummary{}
+	for _, r := range rows {
+		// Guard pertahanan: query utama sudah mengecualikan status terminal,
+		// tetapi helper tidak boleh mengelompokkan activated/cancelled bila
+		// dipakai ulang oleh caller atau test lain.
+		if r.Status == "activated" || r.Status == "cancelled" {
+			continue
+		}
+		it := OpenRFSSummaryItem{
+			RefNo:    r.RefNo,
+			Title:    r.Title,
+			Customer: r.Customer,
+			Category: r.Category,
+			Owner:    r.Owner,
+			Schedule: r.Schedule,
+			Overdue:  r.Overdue,
+			Tags:     r.Tags,
+		}
+		switch r.Status {
+		case "in_progress", "in_progress_field":
+			out.InProgress = append(out.InProgress, it)
+		case "pending_troubleshoot":
+			out.Pending = append(out.Pending, it)
+		default:
+			// planned, postponed, dan status tak dikenal lain.
+			out.Planned = append(out.Planned, it)
+		}
+	}
+	return out
+}
+
+// RFSSummaryRow adalah baris mentah ringkasan RFS sebelum dikelompokkan.
+type RFSSummaryRow struct {
+	RefNo    string
+	Title    string
+	Customer string
+	Category string
+	Owner    string
+	Status   string
+	Schedule *time.Time
+	Overdue  bool
+	Tags     []string
+}

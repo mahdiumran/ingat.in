@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ApiUser, api, MasterDataEntry, masterDataApi, workItemsApi, WorkItem } from '../api'
+import { ApiUser, api, MasterDataEntry, masterDataApi, rfsSummaryApi, RFSSummarySettings, workItemsApi, WorkItem } from '../api'
 import {
   ActionMenu,
   ConfirmDialog,
@@ -83,6 +83,7 @@ export default function Rfs({
   const [bucket, setBucket] = useState<'' | 'soon' | 'overdue' | 'closed'>('')
   const [offset, setOffset] = useState(0)
   const [showCreate, setShowCreate] = useState(false)
+  const [showSummary, setShowSummary] = useState(false)
   const [editItem, setEditItem] = useState<string | null>(null)
   const [detailID, setDetailID] = useState<string | null>(null)
   const [notifyingID, setNotifyingID] = useState<string | null>(null)
@@ -315,13 +316,19 @@ export default function Rfs({
       <PageHeader
         kicker="Operasional"
         title="Aktivasi / EWO"
-        description="Aktivasi layanan / EWO — field: Customer, Product, Priority, Bandwidth, Tag. NOC diingatkan otomatis pada H-7/H-3/H-1/H-0."
+        description="Kelola judul, customer, kategori, product, jadwal, dan tag Aktivasi/EWO. NOC diingatkan otomatis pada H-7/H-3/H-1/H-0."
         actions={
           <>
             <button className="btn-secondary" onClick={items.reload}>
               <span className="material-symbols-outlined text-[18px]">refresh</span>
               Muat ulang
             </button>
+            {isAdmin && (
+              <button className="btn-secondary" onClick={() => setShowSummary(true)}>
+                <span className="material-symbols-outlined text-[18px]">notifications_active</span>
+                Ringkasan Notifikasi
+              </button>
+            )}
             {canWrite && (
               <button className="btn-primary" onClick={() => setShowCreate(true)}>
                 <span className="material-symbols-outlined text-[18px]">event_available</span>
@@ -453,6 +460,7 @@ export default function Rfs({
               <thead>
                 <tr>
                   <th>Ref</th>
+                  <th>Judul</th>
                   <th>Customer</th>
                   <th>Product / Bandwidth</th>
                   <th>Priority</th>
@@ -479,11 +487,25 @@ export default function Rfs({
                       <td className="max-w-[240px]">
                         <button
                           className="block w-full break-words text-left font-medium hover:underline"
-                          title={rfs?.customer_name || it.title}
+                          title={it.title}
                           onClick={() => setDetailID(it.id)}
                         >
-                          {rfs?.customer_name || it.title}
+                          {it.title || '—'}
                         </button>
+                        {rfs?.category_label && (
+                          <span className="badge mt-1 border-outline-variant bg-surface-container text-text-secondary">
+                            <span className="material-symbols-outlined text-[13px]">category</span>
+                            {rfs.category_label}
+                          </span>
+                        )}
+                      </td>
+                      <td className="max-w-[200px]">
+                        <div
+                          className="truncate text-body-sm"
+                          title={rfs?.customer_name || ''}
+                        >
+                          {rfs?.customer_name || '—'}
+                        </div>
                       </td>
                       <td className="max-w-[200px]">
                         <div className="truncate text-body-sm" title={rfs?.service_package || ''}>
@@ -580,6 +602,8 @@ export default function Rfs({
           onError={(msg) => toast('error', 'Gagal memperbarui Aktivasi / EWO', msg)}
         />
       )}
+
+      {showSummary && <RFSSummaryModal toast={toast} onClose={() => setShowSummary(false)} />}
 
       {troubleTarget && (
         <TroubleshootModal
@@ -898,6 +922,11 @@ export function RFSForm({
 }) {
   const packages = useAsync(() => masterDataApi.list({ kind: 'service_package', active: 'true' }), [])
   const teams = useAsync(() => api.teams(), [])
+  // F45: customer aktif dari Master Data (kind customer) untuk dropdown.
+  const customers = useAsync(() => masterDataApi.list({ kind: 'customer', active: 'true' }), [])
+  // F45: kategori & tag EWO dari Master Data.
+  const categories = useAsync(() => masterDataApi.list({ kind: 'ewo_category', active: 'true' }), [])
+  const tagOptions = useAsync(() => masterDataApi.list({ kind: 'ewo_tag', active: 'true' }), [])
   const existing = useAsync(
     () => (editId ? workItemsApi.get(editId) : Promise.resolve(null)),
     [editId],
@@ -906,7 +935,13 @@ export function RFSForm({
   const item = existing.data?.item
   const rfs = item?.rfs
 
+  const [title, setTitle] = useState('')
+  const [description, setDescription] = useState('')
   const [customerName, setCustomerName] = useState('')
+  // F45: manualCustomer=true menampilkan input teks (client di luar daftar).
+  const [manualCustomer, setManualCustomer] = useState(false)
+  const [categoryCode, setCategoryCode] = useState('')
+  const [tags, setTags] = useState<string[]>([])
   const [servicePackage, setServicePackage] = useState('')
   const [priority, setPriority] = useState('normal')
   const [bandwidth, setBandwidth] = useState('')
@@ -916,10 +951,22 @@ export function RFSForm({
   const [busy, setBusy] = useState(false)
 
   const pkgEntries: MasterDataEntry[] = packages.data?.entries ?? []
+  const customerEntries: MasterDataEntry[] = customers.data?.entries ?? []
+  const categoryEntries: MasterDataEntry[] = categories.data?.entries ?? []
+  const activeTagEntries: MasterDataEntry[] = tagOptions.data?.entries ?? []
+  const activeTagLabels = activeTagEntries.map((t) => t.label)
 
-  // Isi form saat data existing tiba (mode edit).
-  if (editId && item && !initialised) {
-    setCustomerName(rfs?.customer_name ?? '')
+  // Isi form saat data existing + pilihan customer tiba (mode edit).
+  // Menunggu customer termuat agar customer legacy dapat dideteksi manual mode.
+  if (editId && item && !customers.loading && !initialised) {
+    const cn = rfs?.customer_name ?? ''
+    setTitle(item.title ?? '')
+    setDescription(item.description ?? '')
+    setCustomerName(cn)
+    // Customer tidak ada di daftar aktif → otomatis masuk mode manual.
+    setManualCustomer(!!cn && !customerEntries.some((c) => c.label === cn))
+    setCategoryCode(rfs?.category_code || rfs?.category_label || '')
+    setTags(item.tags ?? [])
     setServicePackage(rfs?.service_package ?? '')
     setPriority(item.priority ?? 'normal')
     setBandwidth(rfs?.bandwidth ?? '')
@@ -934,8 +981,20 @@ export function RFSForm({
     setInitialised(true)
   }
 
+  function toggleTag(label: string) {
+    setTags((prev) => (prev.includes(label) ? prev.filter((t) => t !== label) : [...prev, label]))
+  }
+
   async function submit(e: React.FormEvent) {
     e.preventDefault()
+    if (!title.trim()) {
+      onError('Judul wajib diisi')
+      return
+    }
+    if (!customerName.trim()) {
+      onError('Customer wajib diisi')
+      return
+    }
     if (!rfsDate) {
       onError('Tanggal RFS wajib diisi')
       return
@@ -943,15 +1002,24 @@ export function RFSForm({
     setBusy(true)
     try {
       const expireAt = new Date(rfsDate).toISOString()
+      // Kategori legacy (tidak aktif di Master Data) disimpan sebagai label
+      // bebas agar penyimpanan tidak gagal validasi code tak dikenal.
+      const legacyCategory =
+        !!categoryCode && !categoryEntries.some((c) => c.code === categoryCode) ? categoryCode : ''
+      // F45: judul & customer dikirim terpisah (tidak saling menimpa).
       const payload = {
-        title: `Aktivasi/EWO — ${customerName}`,
+        title: title.trim(),
+        description: description.trim(),
         priority,
         expire_at: expireAt,
+        tags,
         rfs: {
-          customer_name: customerName,
+          customer_name: customerName.trim(),
           service_package: servicePackage,
           bandwidth,
           pic_team_id: picTeamID || undefined,
+          category_code: legacyCategory ? '' : categoryCode,
+          ...(legacyCategory ? { category_label: legacyCategory } : {}),
         },
       }
 
@@ -972,6 +1040,12 @@ export function RFSForm({
     }
   }
 
+  // Customer legacy yang tak ada di opsi aktif tetap ditampilkan pada select.
+  const customerMissing =
+    !!customerName.trim() && !customerEntries.some((c) => c.label === customerName.trim())
+  // Tag legacy (tidak ada di master data aktif) tetap tampil saat edit.
+  const legacyTags = tags.filter((t) => !activeTagLabels.includes(t))
+
   return (
     <Modal
       title={editId ? 'Ubah Aktivasi / EWO' : 'Aktivasi / EWO Baru'}
@@ -982,7 +1056,11 @@ export function RFSForm({
           <button className="btn-secondary" onClick={onClose} disabled={busy}>
             Batal
           </button>
-          <button className="btn-primary" onClick={submit} disabled={busy || !customerName.trim() || !rfsDate}>
+          <button
+            className="btn-primary"
+            onClick={submit}
+            disabled={busy || !title.trim() || !customerName.trim() || !rfsDate}
+          >
             {busy ? 'Menyimpan…' : editId ? 'Simpan Perubahan' : 'Buat'}
           </button>
         </>
@@ -993,18 +1071,96 @@ export function RFSForm({
       <form onSubmit={submit} className="space-y-3.5">
         <div className="grid gap-3.5 sm:grid-cols-2">
           <div>
-            <label className="label-field" htmlFor="rf-customer">
-              Nama Customer
+            <label className="label-field" htmlFor="rf-title">
+              Judul
             </label>
             <input
-              id="rf-customer"
+              id="rf-title"
               className="input"
               required
               autoFocus
-              value={customerName}
-              onChange={(e) => setCustomerName(e.target.value)}
-              placeholder="PT Contoh Jaya"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="Aktivasi baru — PT Contoh Jaya"
             />
+            <p className="mt-1 text-label-sm text-text-secondary">Judul ringkas permintaan Aktivasi/EWO.</p>
+          </div>
+          <div>
+            <label className="label-field" htmlFor="rf-customer">
+              Customer
+            </label>
+            {manualCustomer ? (
+              <input
+                id="rf-customer"
+                className="input"
+                required
+                value={customerName}
+                onChange={(e) => setCustomerName(e.target.value)}
+                placeholder="Nama client di luar daftar"
+              />
+            ) : (
+              <select
+                id="rf-customer"
+                className="input"
+                value={customerName}
+                onChange={(e) => setCustomerName(e.target.value)}
+              >
+                <option value="">— Pilih Customer —</option>
+                {customerEntries.map((c) => (
+                  <option key={c.id} value={c.label}>
+                    {c.label}
+                  </option>
+                ))}
+                {customerMissing && <option value={customerName}>{customerName}</option>}
+              </select>
+            )}
+            <label className="mt-2 flex items-center gap-2 text-label-sm text-text-secondary">
+              <input
+                type="checkbox"
+                className="h-4 w-4"
+                checked={manualCustomer}
+                onChange={(e) => setManualCustomer(e.target.checked)}
+              />
+              Client tidak ada dalam daftar/list
+            </label>
+          </div>
+        </div>
+
+        <div>
+          <label className="label-field" htmlFor="rf-desc">
+            Deskripsi
+          </label>
+          <textarea
+            id="rf-desc"
+            className="input h-20 py-2"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="Detail permintaan, kebutuhan teknis, atau catatan tambahan…"
+          />
+        </div>
+
+        <div className="grid gap-3.5 sm:grid-cols-2">
+          <div>
+            <label className="label-field" htmlFor="rf-category">
+              Kategori EWO
+            </label>
+            <select
+              id="rf-category"
+              className="input"
+              value={categoryCode}
+              onChange={(e) => setCategoryCode(e.target.value)}
+            >
+              <option value="">— Pilih Kategori —</option>
+              {categoryEntries.map((c) => (
+                <option key={c.id} value={c.code}>
+                  {c.label}
+                </option>
+              ))}
+              {categoryCode && !categoryEntries.some((c) => c.code === categoryCode) && (
+                <option value={categoryCode}>{rfs?.category_label || categoryCode}</option>
+              )}
+            </select>
+            <p className="mt-1 text-label-sm text-text-secondary">Dikelola di Master Data › Kategori EWO.</p>
           </div>
           <div>
             <label className="label-field" htmlFor="rf-package">
@@ -1073,6 +1229,48 @@ export function RFSForm({
         </div>
 
         <div>
+          <div className="label-field">Tag</div>
+          <div className="flex flex-wrap gap-1.5">
+            {activeTagEntries.map((t) => {
+              const on = tags.includes(t.label)
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => toggleTag(t.label)}
+                  aria-pressed={on}
+                  className={`badge border transition ${
+                    on
+                      ? 'border-primary bg-primary-container text-on-primary-container'
+                      : 'border-outline-variant bg-surface-container text-text-secondary'
+                  }`}
+                >
+                  {t.label}
+                </button>
+              )
+            })}
+            {/* F45: tag legacy (nonaktif di Master Data) tetap tampil & terpilih agar tidak hilang. */}
+            {legacyTags.map((t) => (
+              <button
+                key={`legacy-${t}`}
+                type="button"
+                onClick={() => toggleTag(t)}
+                aria-pressed
+                title="Tag lama (tidak aktif di Master Data)"
+                className="badge border border-warning bg-warning-container/50 text-on-warning-container"
+              >
+                {t}
+                <span className="material-symbols-outlined text-[13px]">history</span>
+              </button>
+            ))}
+            {activeTagEntries.length === 0 && legacyTags.length === 0 && (
+              <span className="text-label-sm text-text-secondary">Belum ada tag di Master Data.</span>
+            )}
+          </div>
+          <p className="mt-1 text-label-sm text-text-secondary">Dikelola di Master Data › Tag EWO.</p>
+        </div>
+
+        <div>
           <label className="label-field" htmlFor="rf-picteam">
             PIC Team
           </label>
@@ -1094,6 +1292,128 @@ export function RFSForm({
           </p>
         </div>
       </form>
+    </Modal>
+  )
+}
+
+/** RFSSummaryModal (F45) — pengaturan ringkasan Aktivasi/EWO terbuka. */
+function RFSSummaryModal({ toast, onClose }: { toast: Toast; onClose: () => void }) {
+  const [mode, setMode] = useState<RFSSummarySettings['mode']>('interval')
+  const [interval, setInterval] = useState(60)
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    rfsSummaryApi
+      .get()
+      .then((s) => {
+        setMode(s.mode)
+        setInterval(s.interval_minutes || 60)
+      })
+      .catch(() => toast('error', 'Gagal memuat pengaturan ringkasan Aktivasi/EWO'))
+      .finally(() => setLoading(false))
+  }, [toast])
+
+  async function save() {
+    setBusy(true)
+    try {
+      await rfsSummaryApi.save({ mode, interval_minutes: interval })
+      toast('success', 'Pengaturan disimpan', 'Ringkasan Aktivasi/EWO diperbarui.')
+      onClose()
+    } catch (err) {
+      toast('error', 'Gagal menyimpan', err instanceof Error ? err.message : undefined)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function preview() {
+    setBusy(true)
+    try {
+      const res = await rfsSummaryApi.preview()
+      if (res.added > 0) {
+        toast('success', 'Ringkasan dikirim', 'Cek kanal notifikasi (Telegram/WhatsApp).')
+      } else {
+        toast('warning', 'Tidak ada pesan baru', 'Binding aktif mungkin sudah menerima ringkasan ini.')
+      }
+    } catch (err) {
+      toast('error', 'Gagal mengirim ringkasan', err instanceof Error ? err.message : undefined)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const modes: { value: RFSSummarySettings['mode']; label: string; note: string }[] = [
+    { value: 'on_change', label: 'Saat ada perubahan', note: 'Kirim saat Aktivasi/EWO dibuat atau berubah.' },
+    { value: 'interval', label: 'Berkala', note: 'Kirim otomatis setiap N menit.' },
+    { value: 'off', label: 'Nonaktif', note: 'Tidak mengirim ringkasan otomatis.' },
+  ]
+
+  return (
+    <Modal
+      title="Ringkasan Notifikasi Aktivasi/EWO"
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn-secondary" onClick={preview} disabled={busy || loading}>
+            <span className="material-symbols-outlined text-[18px]">send</span>
+            Kirim Pratinjau
+          </button>
+          <button className="btn-primary" onClick={save} disabled={busy || loading}>
+            {busy ? 'Menyimpan…' : 'Simpan'}
+          </button>
+        </>
+      }
+    >
+      {loading ? (
+        <LoadingBlock />
+      ) : (
+        <div className="space-y-3.5">
+          <p className="text-body-sm text-text-secondary">
+            Ringkasan memuat seluruh Aktivasi/EWO yang belum ditutup, dikelompokkan sebagai
+            direncanakan, sedang dikerjakan, dan menunggu troubleshooting.
+          </p>
+          <div className="space-y-2">
+            {modes.map((m) => (
+              <label
+                key={m.value}
+                className={`flex cursor-pointer items-start gap-3 rounded-control border p-3 ${
+                  mode === m.value ? 'border-primary bg-primary/5' : 'border-outline-variant'
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="rfs-summary-mode"
+                  value={m.value}
+                  checked={mode === m.value}
+                  onChange={() => setMode(m.value)}
+                  className="mt-0.5"
+                />
+                <span>
+                  <span className="block text-body-sm font-medium">{m.label}</span>
+                  <span className="block text-label-sm text-text-secondary">{m.note}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+          {mode === 'interval' && (
+            <div>
+              <label className="label-field" htmlFor="rfs-summary-interval">
+                Interval (menit)
+              </label>
+              <input
+                id="rfs-summary-interval"
+                type="number"
+                min={5}
+                max={1440}
+                className="input"
+                value={interval}
+                onChange={(e) => setInterval(Number(e.target.value))}
+              />
+            </div>
+          )}
+        </div>
+      )}
     </Modal>
   )
 }

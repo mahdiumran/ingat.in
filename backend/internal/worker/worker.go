@@ -100,6 +100,12 @@ func (w *Worker) Start() {
 	if _, err := w.cron.AddFunc("* * * * *", w.runTicketSummaryTick); err != nil {
 		log.Printf("worker: jadwal ringkasan tiket: %v", err)
 	}
+	// F45: ringkasan Aktivasi/EWO (RFS) terbuka per interval dari setting
+	// rfs.summary_mode / rfs.summary_interval_min (default 60). Tick tiap menit;
+	// kirim memakai slot epoch-menit agar tidak dobel.
+	if _, err := w.cron.AddFunc("* * * * *", w.runRFSSummaryTick); err != nil {
+		log.Printf("worker: jadwal ringkasan RFS: %v", err)
+	}
 	if _, err := w.cron.AddFunc("* * * * *", w.runTodoReminderTick); err != nil {
 		log.Printf("worker: jadwal reminder todo: %v", err)
 	}
@@ -485,6 +491,131 @@ func (w *Worker) sendTicketSummary(ctx context.Context, now time.Time, interval 
 	}
 	if res.Added > 0 {
 		log.Printf("worker[ticket_summary]: ringkasan %s diantrikan (%d tiket)", slotKey, s.Total())
+	}
+	return res.Added, nil
+}
+
+// runRFSSummaryTick (F45) mengirim ringkasan Aktivasi/EWO (RFS) terbuka sesuai
+// jadwal setting `rfs.summary_mode` (on_change/interval/off; default interval).
+// Mode 'off' menonaktifkan; 'interval' mengirim tiap N menit. Kunci event
+// memakai slot epoch-menit agar tidak dobel dalam satu slot.
+func (w *Worker) runRFSSummaryTick() {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	w.withHealth(ctx, "rfs_summary", func() error {
+		mode := "interval"
+		if cfg, err := w.store.GetSetting(ctx, "rfs.summary_mode"); err == nil {
+			if m, ok := cfg["value"].(string); ok && strings.TrimSpace(m) != "" {
+				mode = strings.TrimSpace(strings.ToLower(m))
+			}
+		}
+		if mode != "interval" {
+			// on_change dikirim oleh API saat RFS dibuat/berubah; mode off diam.
+			return nil
+		}
+
+		interval := 60
+		if v, err := w.store.GetSetting(ctx, "rfs.summary_interval_min"); err == nil {
+			switch n := v["value"].(type) {
+			case float64:
+				interval = int(n)
+			case string:
+				if p, e := strconv.Atoi(strings.TrimSpace(n)); e == nil {
+					interval = p
+				}
+			}
+		}
+		if interval < 5 {
+			interval = 5
+		}
+		if interval > 1440 {
+			interval = 1440
+		}
+
+		now := time.Now().UTC()
+		// Gunakan epoch-menit (bukan Minute() 0..59) agar interval 120/1440
+		// tetap benar dan tidak berubah menjadi pengiriman tiap jam.
+		minuteSlot := now.Unix() / 60
+		if minuteSlot%int64(interval) != 0 {
+			return nil
+		}
+
+		_, err := w.sendRFSSummary(ctx, now, interval)
+		return err
+	})
+}
+
+// sendRFSSummary membangun & mengantrekan ringkasan RFS terbuka ke target
+// default. Kunci slot memakai epoch agar interval lintas jam/hari tidak
+// bertabrakan.
+func (w *Worker) sendRFSSummary(ctx context.Context, now time.Time, interval int) (int, error) {
+	targetID, err := w.store.DefaultTargetID(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("target default tidak ditemukan: %w", err)
+	}
+
+	loc, err := time.LoadLocation(w.cfg.Timezone)
+	if err != nil {
+		loc = time.UTC
+	}
+	local := now.In(loc)
+
+	s, err := w.store.ListOpenRFSSummary(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	lines := make([]string, 0, s.Total()+3)
+	write := func(title string, items []repository.OpenRFSSummaryItem) {
+		lines = append(lines, fmt.Sprintf("\u2014 %s (%d) \u2014", title, len(items)))
+		for _, it := range items {
+			lines = append(lines, notify.FormatRFSSummaryLine(notify.RFSSummaryRow{
+				RefNo:    it.RefNo,
+				Title:    it.Title,
+				Customer: it.Customer,
+				Category: it.Category,
+				Owner:    it.Owner,
+				Schedule: notify.FormatWIB(it.Schedule),
+				Overdue:  it.Overdue,
+				Tags:     it.Tags,
+			}))
+		}
+		if len(items) == 0 {
+			lines = append(lines, "(tidak ada)")
+		}
+	}
+	write("Direncanakan", s.Planned)
+	write("Sedang dikerjakan", s.InProgress)
+	write("Menunggu troubleshooting", s.Pending)
+
+	dayLabel := local.Format("02 Jan 2006 15:04")
+	desc, notes := notify.BuildRFSSummary(
+		dayLabel, len(s.Planned), len(s.InProgress), len(s.Pending), lines)
+
+	payload := notify.Payload{
+		Title:       "Ringkasan Aktivasi/EWO Terbuka",
+		CreatedAt:   notify.FormatWIB(&now),
+		Description: desc,
+		Notes:       notes,
+	}
+
+	// Kunci slot memakai epoch-menit dibagi interval agar interval lintas
+	// jam/hari tidak bertabrakan dan tidak dobel pada slot yang sama.
+	slotKey := strconv.FormatInt((now.Unix()/60)/int64(maxInt(1, interval)), 10)
+	res, err := w.outbox.Enqueue(ctx, notify.EnqueueParams{
+		EventKey:    "rfs_summary:" + slotKey,
+		SourceType:  "system",
+		TemplateKey: notify.TemplateRFSSummary,
+		Severity:    "info",
+		TargetID:    *targetID,
+		Payload:     payload,
+	})
+	if err != nil {
+		return 0, err
+	}
+	if res.Added > 0 {
+		log.Printf("worker[rfs_summary]: ringkasan %s diantrikan (%d RFS)", slotKey, s.Total())
 	}
 	return res.Added, nil
 }

@@ -459,6 +459,10 @@ type RFSDetails struct {
 	SalesUsername string     `json:"sales_username"`
 	Site          string     `json:"site"`
 	InstallStage  string     `json:"install_stage"`
+	// F45: snapshot kategori EWO (master data kind `ewo_category`).
+	// Kode+label disimpan agar riwayat tetap terbaca walau master data berubah.
+	CategoryCode  string `json:"category_code"`
+	CategoryLabel string `json:"category_label"`
 	// F23: catatan penanganan (modal Troubleshoot pada Aktivasi/EWO).
 	IssueFound      string `json:"issue_found"`
 	Troubleshooting string `json:"troubleshooting"`
@@ -732,6 +736,12 @@ const (
 	// meta opsional mengatur izin per-command (allow_open, allow_ticket, dst.);
 	// bila tidak ada, seluruh command dianggap diizinkan.
 	KindTelegramChat = "telegram_chat"
+	// KindEWOCategory (F45) menyimpan kategori permintaan Aktivasi/EWO (RFS).
+	// Nilainya disalin (snapshot code+label) ke rfs_details saat RFS disimpan.
+	KindEWOCategory = "ewo_category"
+	// KindEWOTag (F45) menyimpan daftar tag yang sah untuk Aktivasi/EWO.
+	// work_items.tags tetap sumber nilai tag; hanya divalidasi terhadap daftar ini.
+	KindEWOTag = "ewo_tag"
 )
 
 // Jenis customer pada meta_json.

@@ -97,6 +97,9 @@ type CreateRFSDetailsParams struct {
 	SalesUsername string
 	Site          string
 	InstallStage  string
+	// F45: snapshot kategori EWO (kode+label).
+	CategoryCode  string
+	CategoryLabel string
 	// F23: catatan penanganan.
 	IssueFound      string
 	Troubleshooting string
@@ -112,12 +115,12 @@ func (s *Store) CreateRFSDetails(ctx context.Context, tx pgx.Tx, workItemID uuid
 		INSERT INTO rfs_details
 			(work_item_id, customer_name, service_id, service_package, bandwidth,
 			 pic_noc, pic_sales, pic_team_id, sales_username, site, install_stage,
-			 issue_found, troubleshooting, action_solution)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+			 category_code, category_label, issue_found, troubleshooting, action_solution)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
 		ON CONFLICT (work_item_id) DO NOTHING`,
 		workItemID, p.CustomerName, p.ServiceID, p.ServicePackage, p.Bandwidth,
 		p.PicNOC, p.PicSales, p.PicTeamID, p.SalesUsername, p.Site, p.InstallStage,
-		p.IssueFound, p.Troubleshooting, p.ActionSolution)
+		p.CategoryCode, p.CategoryLabel, p.IssueFound, p.Troubleshooting, p.ActionSolution)
 	return err
 }
 

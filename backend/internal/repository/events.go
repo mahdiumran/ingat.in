@@ -199,6 +199,9 @@ type UpdateRFSDetailsParams struct {
 	PicSales       *string
 	Site           *string
 	InstallStage   *string
+	// F45: snapshot kategori EWO. Keduanya diperbarui bersamaan (kode + label).
+	CategoryCode  *string
+	CategoryLabel *string
 	// F23: catatan penanganan (modal Troubleshoot).
 	IssueFound      *string
 	Troubleshooting *string
@@ -223,12 +226,14 @@ func (s *Store) UpdateRFSDetails(ctx context.Context, tx pgx.Tx, workItemID uuid
 			issue_found     = COALESCE($9, issue_found),
 			troubleshooting = COALESCE($10, troubleshooting),
 			action_solution = COALESCE($11, action_solution),
-			pic_team_id     = CASE WHEN $13::boolean THEN $12 ELSE pic_team_id END
+			pic_team_id     = CASE WHEN $13::boolean THEN $12 ELSE pic_team_id END,
+			category_code   = COALESCE($14, category_code),
+			category_label  = COALESCE($15, category_label)
 		WHERE work_item_id = $1`,
 		workItemID, p.CustomerName, p.ServicePackage, p.Bandwidth,
 		p.PicNOC, p.PicSales, p.Site, p.InstallStage,
 		p.IssueFound, p.Troubleshooting, p.ActionSolution,
-		p.PicTeamID, p.SetPicTeam)
+		p.PicTeamID, p.SetPicTeam, p.CategoryCode, p.CategoryLabel)
 	return err
 }
 

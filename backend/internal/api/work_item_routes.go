@@ -77,6 +77,11 @@ type rfsDetailsRequest struct {
 	PicTeamID    *string `json:"pic_team_id"`
 	Site         string  `json:"site"`
 	InstallStage string  `json:"install_stage"`
+	// F45: kategori EWO (master data kind `ewo_category`). Bila code diisi,
+	// label diambil dari master data (snapshot code+label pada rfs_details).
+	// Pointer agar PATCH tahu field tidak dikirim vs dikosongkan.
+	CategoryCode  *string `json:"category_code"`
+	CategoryLabel *string `json:"category_label"`
 	// F23: catatan penanganan (modal Troubleshoot). Pointer agar PATCH parsial.
 	IssueFound      *string `json:"issue_found"`
 	Troubleshooting *string `json:"troubleshooting"`
@@ -354,6 +359,12 @@ func (s *Server) handleCreateWorkItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req.Title = strings.TrimSpace(req.Title)
+	// F45: judul dan nama customer RFS independen. Bila form mengirim hanya
+	// customer_name (tanpa judul), judul default memakai nama customer agar
+	// permintaan tetap dapat dibuat tanpa saling menimpa.
+	if req.Title == "" && req.ItemType == models.ItemRFS && req.RFS != nil {
+		req.Title = strings.TrimSpace(req.RFS.CustomerName)
+	}
 	if req.Title == "" {
 		writeErr(w, http.StatusBadRequest, "judul wajib diisi")
 		return
@@ -361,6 +372,21 @@ func (s *Server) handleCreateWorkItem(w http.ResponseWriter, r *http.Request) {
 	if !isKnownItemType(req.ItemType) {
 		writeErr(w, http.StatusBadRequest, "item_type tidak dikenal")
 		return
+	}
+
+	// F45: tag dan kategori RFS baru harus berasal dari Master Data aktif.
+	if req.ItemType == models.ItemRFS {
+		if len(req.Tags) > 0 {
+			if err := s.validateRFSTags(r.Context(), req.Tags, nil); err != nil {
+				writeErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+		if req.RFS != nil && strings.TrimSpace(derefStr(req.RFS.CategoryCode)) == "" &&
+			strings.TrimSpace(derefStr(req.RFS.CategoryLabel)) != "" {
+			writeErr(w, http.StatusBadRequest, "kategori EWO harus dipilih dari Master Data")
+			return
+		}
 	}
 
 	wf := workitems.WorkflowFor(req.ItemType)
@@ -543,6 +569,10 @@ func (s *Server) handleCreateWorkItem(w http.ResponseWriter, r *http.Request) {
 	if full.IsTicket() {
 		s.maybeSendTicketSummary(r.Context(), time.Now().UTC())
 	}
+	// F45: pembuatan RFS memicu ringkasan Aktivasi/EWO bila mode=on_change.
+	if full.ItemType == models.ItemRFS {
+		s.maybeSendRFSSummary(r.Context(), time.Now().UTC())
+	}
 	writeJSON(w, http.StatusCreated, full)
 }
 
@@ -719,6 +749,12 @@ func (s *Server) createExtension(r *http.Request, tx pgx.Tx, id uuid.UUID, req w
 				}
 				picTeam = &parsed
 			}
+			// F45: resolusi kategori EWO (snapshot code+label).
+			categoryCode, categoryLabel, cerr := s.resolveRFSCategory(r.Context(),
+				derefStr(req.RFS.CategoryCode), derefStr(req.RFS.CategoryLabel))
+			if cerr != nil {
+				return cerr
+			}
 			d = repository.CreateRFSDetailsParams{
 				CustomerName:    req.RFS.CustomerName,
 				ServiceID:       req.RFS.ServiceID,
@@ -730,6 +766,8 @@ func (s *Server) createExtension(r *http.Request, tx pgx.Tx, id uuid.UUID, req w
 				SalesUsername:   currentUsername(r),
 				Site:            req.RFS.Site,
 				InstallStage:    req.RFS.InstallStage,
+				CategoryCode:    categoryCode,
+				CategoryLabel:   categoryLabel,
 				IssueFound:      derefStr(req.RFS.IssueFound),
 				Troubleshooting: derefStr(req.RFS.Troubleshooting),
 				ActionSolution:  derefStr(req.RFS.ActionSolution),
@@ -786,6 +824,16 @@ func (s *Server) handleUpdateWorkItem(w http.ResponseWriter, r *http.Request) {
 		!s.canModifyItem(r, userFrom(r), item) {
 		writeErr(w, http.StatusForbidden, "hanya pembuat item atau admin yang dapat mengubah deskripsi/detail")
 		return
+	}
+
+	// F45: tag RFS divalidasi terhadap master data `ewo_tag` aktif. Nilai tag
+	// yang sudah tersimpan pada item tetap diizinkan (legacy) agar tidak hilang
+	// saat operator mengedit RFS lama.
+	if item.ItemType == models.ItemRFS && req.Tags != nil {
+		if err := s.validateRFSTags(r.Context(), req.Tags, item.Tags); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 
 	fields := map[string]any{}
@@ -893,7 +941,7 @@ func (s *Server) handleUpdateWorkItem(w http.ResponseWriter, r *http.Request) {
 				}
 				picTeam = &parsed
 			}
-			if err := s.store.UpdateRFSDetails(r.Context(), tx, id, repository.UpdateRFSDetailsParams{
+			rfsParams := repository.UpdateRFSDetailsParams{
 				CustomerName:    strPtrOrNil(req.RFS.CustomerName),
 				ServicePackage:  strPtrOrNil(req.RFS.ServicePackage),
 				Bandwidth:       strPtrOrNil(req.RFS.Bandwidth),
@@ -906,7 +954,32 @@ func (s *Server) handleUpdateWorkItem(w http.ResponseWriter, r *http.Request) {
 				ActionSolution:  req.RFS.ActionSolution,
 				PicTeamID:       picTeam,
 				SetPicTeam:      req.RFS.PicTeamID != nil,
-			}); err != nil {
+			}
+			// F45: perbarui snapshot kategori bila salah satu field dikirim.
+			// Kategori legacy yang sudah tersimpan boleh dipertahankan; nilai bebas
+			// baru tidak boleh dibuat karena opsi harus berasal dari Master Data.
+			if req.RFS.CategoryCode != nil || req.RFS.CategoryLabel != nil {
+				requestedCode := strings.TrimSpace(derefStr(req.RFS.CategoryCode))
+				requestedLabel := strings.TrimSpace(derefStr(req.RFS.CategoryLabel))
+				if requestedCode == "" && requestedLabel != "" {
+					if item.RFS == nil || !strings.EqualFold(requestedLabel, item.RFS.CategoryLabel) {
+						return fmt.Errorf("kategori EWO harus dipilih dari Master Data: %w", errValidation)
+					}
+					// Pertahankan snapshot legacy tanpa mencoba memvalidasi ulang entri
+					// yang mungkin sudah dinonaktifkan di Master Data.
+					code, label := item.RFS.CategoryCode, item.RFS.CategoryLabel
+					rfsParams.CategoryCode = &code
+					rfsParams.CategoryLabel = &label
+				} else {
+					code, label, cerr := s.resolveRFSCategory(r.Context(), requestedCode, requestedLabel)
+					if cerr != nil {
+						return cerr
+					}
+					rfsParams.CategoryCode = &code
+					rfsParams.CategoryLabel = &label
+				}
+			}
+			if err := s.store.UpdateRFSDetails(r.Context(), tx, id, rfsParams); err != nil {
 				return err
 			}
 			// F25: simpan data teknis aktivasi bila dikirim.
@@ -1013,6 +1086,12 @@ func (s *Server) handleUpdateWorkItem(w http.ResponseWriter, r *http.Request) {
 
 	// F18: perbarui baris spreadsheet bila Todo Task berubah (best-effort).
 	s.syncSheet(r, updated, "updated")
+
+	// F45: perubahan material RFS (owner/tim/jadwal/kategori/customer/tag/judul)
+	// memicu ringkasan Aktivasi/EWO bila mode=on_change (best-effort).
+	if item.ItemType == models.ItemRFS && rfsMaterialUpdate(req) {
+		s.maybeSendRFSSummary(r.Context(), time.Now().UTC())
+	}
 
 	writeJSON(w, http.StatusOK, updated)
 }
@@ -1146,6 +1225,10 @@ func (s *Server) handleChangeStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if updated.IsTicket() && item.Status != req.Status {
 		s.maybeSendTicketSummary(r.Context(), now)
+	}
+	// F45: perubahan status RFS memicu ringkasan Aktivasi/EWO.
+	if updated.ItemType == models.ItemRFS && item.Status != req.Status {
+		s.maybeSendRFSSummary(r.Context(), now)
 	}
 
 	writeJSON(w, http.StatusOK, updated)
