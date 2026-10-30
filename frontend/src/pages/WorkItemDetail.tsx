@@ -247,12 +247,7 @@ export function ItemDetail({
     if (!item) return
     setBusy(true)
     try {
-      await workItemsApi.update(id, { rfs: { install_stage: 'activated' } })
-      try {
-        await workItemsApi.changeStatus(id, 'activated', 'Close ticket')
-      } catch {
-        /* tahap tetap tersimpan walau transisi tidak diizinkan */
-      }
+      await workItemsApi.rfsClose(id, 'Close ticket')
       toast('success', 'RFS ditutup (Closed/Completed)', item.ref_no)
       detail.reload()
     } catch (err) {

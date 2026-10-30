@@ -30,7 +30,7 @@ import (
 
 // Kolom CSV import/export customer (urutan baku).
 var customerCSVColumns = []string{
-	"nama", "jenis", "kode", "pic", "telepon", "email", "alamat", "kapasitas",
+	"nama", "jenis", "kode", "cid", "pic", "telepon", "email", "alamat", "kapasitas",
 }
 
 // importRowError adalah satu baris gagal pada laporan import.
@@ -120,6 +120,7 @@ func (s *Server) handleImportCustomer(w http.ResponseWriter, r *http.Request) {
 		}
 		jenis := strings.ToLower(get("jenis"))
 		meta := map[string]any{
+			"cid":      get("cid"),
 			"jenis":    jenis,
 			"pic":      get("pic"),
 			"phone":    get("telepon"),
@@ -150,7 +151,11 @@ func (s *Server) handleImportCustomer(w http.ResponseWriter, r *http.Request) {
 				Description: &desc,
 				Meta:        meta,
 			}); err != nil {
-				failures = append(failures, importRowError{Row: rowNum, Nama: nama, Kode: kode, Error: err.Error()})
+				msg := err.Error()
+				if isCIDConflict(err) {
+					msg = "CID " + get("cid") + " sudah dipakai pelanggan lain"
+				}
+				failures = append(failures, importRowError{Row: rowNum, Nama: nama, Kode: kode, Error: msg})
 				continue
 			}
 			updated++
@@ -173,7 +178,11 @@ func (s *Server) handleImportCustomer(w http.ResponseWriter, r *http.Request) {
 				IsActive:    true,
 				CreatedBy:   actor,
 			}); err != nil {
-				failures = append(failures, importRowError{Row: rowNum, Nama: nama, Kode: code, Error: err.Error()})
+				msg := err.Error()
+				if isCIDConflict(err) {
+					msg = "CID " + get("cid") + " sudah dipakai pelanggan lain"
+				}
+				failures = append(failures, importRowError{Row: rowNum, Nama: nama, Kode: code, Error: msg})
 				continue
 			}
 			inserted++
@@ -262,8 +271,8 @@ func (s *Server) handleCustomerTemplate(w http.ResponseWriter, r *http.Request) 
 		w.Header().Set("Content-Disposition", `attachment; filename="template-customer.csv"`)
 		cw := csv.NewWriter(w)
 		_ = cw.Write(customerCSVColumns)
-		_ = cw.Write([]string{"PT Contoh Jaya", "corporate", "", "Budi", "08123456789", "budi@contoh.id", "Jl. Contoh 1", "100 Mbps"})
-		_ = cw.Write([]string{"Budi Santoso", "personal", "", "", "08120000000", "", "Jl. Mawar 2", ""})
+		_ = cw.Write([]string{"PT Contoh Jaya", "corporate", "", "CID-000123", "Budi", "08123456789", "budi@contoh.id", "Jl. Contoh 1", "100 Mbps"})
+		_ = cw.Write([]string{"Budi Santoso", "personal", "", "", "", "08120000000", "", "Jl. Mawar 2", ""})
 		cw.Flush()
 		return
 	}
@@ -376,14 +385,15 @@ func (s *Server) writeCustomerTemplateXLSX(w http.ResponseWriter) {
 		cols[i] = c
 	}
 	_ = f.SetSheetRow(dataSheet, "A1", &cols)
-	_ = f.SetCellStyle(dataSheet, "A1", "H1", headerStyle)
+	_ = f.SetCellStyle(dataSheet, "A1", "I1", headerStyle)
 	_ = f.SetColWidth(dataSheet, "A", "A", 28)
 	_ = f.SetColWidth(dataSheet, "B", "B", 14)
 	_ = f.SetColWidth(dataSheet, "C", "C", 18)
-	_ = f.SetColWidth(dataSheet, "D", "H", 20)
+	_ = f.SetColWidth(dataSheet, "D", "D", 18)
+	_ = f.SetColWidth(dataSheet, "E", "I", 20)
 
-	_ = f.SetSheetRow(dataSheet, "A2", &[]any{"PT Contoh Jaya", "corporate", "", "Budi", "08123456789", "budi@contoh.id", "Jl. Contoh 1", "100 Mbps"})
-	_ = f.SetSheetRow(dataSheet, "A3", &[]any{"Budi Santoso", "personal", "", "", "08120000000", "", "Jl. Mawar 2", ""})
+	_ = f.SetSheetRow(dataSheet, "A2", &[]any{"PT Contoh Jaya", "corporate", "", "CID-000123", "Budi", "08123456789", "budi@contoh.id", "Jl. Contoh 1", "100 Mbps"})
+	_ = f.SetSheetRow(dataSheet, "A3", &[]any{"Budi Santoso", "personal", "", "", "", "08120000000", "", "Jl. Mawar 2", ""})
 
 	_ = f.AddDataValidation(dataSheet, &excelize.DataValidation{
 		Sqref:      "B2:B1000",
@@ -401,6 +411,7 @@ func (s *Server) writeCustomerTemplateXLSX(w http.ResponseWriter) {
 		{"nama", "Wajib. Nama pelanggan atau perusahaan."},
 		{"jenis", "Wajib. Salah satu: personal, corporate, reseller, dedicated."},
 		{"kode", "Opsional. Kosongkan agar sistem membuat CUST-<tahun>-<urut>."},
+		{"cid", "Opsional. Customer ID dari sistem billing, mis. CID-000123. Harus unik."},
 		{"pic", "Wajib untuk corporate/reseller/dedicated; boleh kosong untuk personal."},
 		{"telepon", "Opsional. Nomor telepon/WhatsApp."},
 		{"email", "Opsional. Surel PIC/pelanggan."},
@@ -465,19 +476,19 @@ func fillCustomerSheet(f *excelize.File, sheet string, entries []models.MasterDa
 	if err != nil {
 		return err
 	}
-	header := []any{"Kode", "Nama", "Jenis", "PIC", "Telepon", "Email", "Alamat", "Kapasitas", "Deskripsi", "Status", "Dibuat"}
+	header := []any{"Kode", "CID", "Nama", "Jenis", "PIC", "Telepon", "Email", "Alamat", "Kapasitas", "Deskripsi", "Status", "Dibuat"}
 	if err := f.SetSheetRow(sheet, "A1", &header); err != nil {
 		return err
 	}
-	if err := f.SetCellStyle(sheet, "A1", "K1", headerStyle); err != nil {
+	if err := f.SetCellStyle(sheet, "A1", "L1", headerStyle); err != nil {
 		return err
 	}
 	widths := []struct {
 		col string
 		w   float64
 	}{
-		{"A", 18}, {"B", 28}, {"C", 14}, {"D", 20}, {"E", 16}, {"F", 24},
-		{"G", 30}, {"H", 14}, {"I", 24}, {"J", 10}, {"K", 20},
+		{"A", 18}, {"B", 18}, {"C", 28}, {"D", 14}, {"E", 20}, {"F", 16},
+		{"G", 24}, {"H", 30}, {"I", 14}, {"J", 24}, {"K", 10}, {"L", 20},
 	}
 	for _, wd := range widths {
 		if err := f.SetColWidth(sheet, wd.col, wd.col, wd.w); err != nil {
@@ -488,6 +499,7 @@ func fillCustomerSheet(f *excelize.File, sheet string, entries []models.MasterDa
 	for i, e := range entries {
 		row := []any{
 			e.Code,
+			metaString(e.Meta, "cid"),
 			e.Label,
 			sheetNameForJenis(customerJenisOf(e)),
 			metaString(e.Meta, "pic"),
@@ -505,7 +517,7 @@ func fillCustomerSheet(f *excelize.File, sheet string, entries []models.MasterDa
 			return err
 		}
 	}
-	return f.AutoFilter(sheet, fmt.Sprintf("A1:K%d", len(entries)+1), nil)
+	return f.AutoFilter(sheet, fmt.Sprintf("A1:L%d", len(entries)+1), nil)
 }
 
 // statusLabel menerjemahkan is_active ke teks Indonesia.

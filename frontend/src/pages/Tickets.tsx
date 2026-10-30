@@ -14,7 +14,7 @@ import {
 } from '../components/ui'
 import { useAsync, useDebounced, useTagColors } from '../hooks'
 import { slaTone, formatDuration } from '../lib/format'
-import { statusTone } from '../design/tokens'
+import { statusLabel, statusTone } from '../design/tokens'
 import { ItemDetail } from './WorkItemDetail'
 
 export type Toast = (kind: 'success' | 'error' | 'info' | 'warning', title: string, body?: string) => void
@@ -248,10 +248,13 @@ export default function Tickets({
         toast('success', 'Tiket mulai dikerjakan', `${item.ref_no} ditetapkan kepada ${user.username}`)
       } else {
         const result = await workItemsApi.addCollaborator(item.id, user.username)
+        const detail = result.status
+          ? `${item.ref_no} — status: ${statusLabel(result.status)}`
+          : item.ref_no
         toast(
           result.inserted ? 'success' : 'info',
           result.inserted ? 'Berhasil mengikuti tiket' : 'Sudah mengikuti tiket',
-          item.ref_no,
+          detail,
         )
       }
       items.reload()

@@ -232,10 +232,14 @@ export default function Rfs({
         toast('success', 'RFS mulai dikerjakan', `${refNo} ditetapkan kepada ${user.username}`)
       } else {
         const result = await workItemsApi.addCollaborator(id, user.username)
+        // Status otomatis maju (mis. planned → in_progress) saat mulai menangani.
+        const detail = result.status
+          ? `${refNo} — status: ${statusLabel(result.status)}`
+          : refNo
         toast(
           result.inserted ? 'success' : 'info',
           result.inserted ? 'Berhasil mengikuti RFS' : 'Sudah mengikuti RFS',
-          refNo,
+          detail,
         )
       }
       items.reload()
@@ -277,12 +281,7 @@ export default function Rfs({
       tone: 'primary',
       icon: 'task_alt',
       run: async () => {
-        await workItemsApi.update(id, { rfs: { install_stage: 'activated' } })
-        try {
-          await workItemsApi.changeStatus(id, 'activated', 'Close ticket (activated)')
-        } catch {
-          /* tahap tetap tersimpan walau transisi status tidak diizinkan */
-        }
+        await workItemsApi.rfsClose(id, 'Close ticket (activated)')
         toast('success', 'RFS ditutup (Closed/Completed)', refNo)
         items.reload()
       },
@@ -958,6 +957,11 @@ export function RFSForm({
 
   const item = existing.data?.item
   const rfs = item?.rfs
+  // CID customer (meta master data) untuk ditampilkan pada dropdown customer.
+  const customerCID = (entry: MasterDataEntry): string => {
+    const m = (entry.meta ?? {}) as Record<string, unknown>
+    return m.cid == null ? '' : String(m.cid)
+  }
 
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
@@ -1133,6 +1137,7 @@ export function RFSForm({
                 {customerEntries.map((c) => (
                   <option key={c.id} value={c.label}>
                     {c.label}
+                    {customerCID(c) ? ` — ${customerCID(c)}` : ''}
                   </option>
                 ))}
                 {customerMissing && <option value={customerName}>{customerName}</option>}

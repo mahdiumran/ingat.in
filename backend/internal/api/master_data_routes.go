@@ -187,6 +187,10 @@ func (s *Server) handleCreateMasterData(w http.ResponseWriter, r *http.Request) 
 		CreatedBy:   currentUsername(r),
 	})
 	if err != nil {
+		if isCIDConflict(err) {
+			writeErr(w, http.StatusConflict, "CID "+metaString(req.Meta, "cid")+" sudah dipakai pelanggan lain")
+			return
+		}
 		if isUniqueViolation(err) {
 			writeErr(w, http.StatusConflict, "kode "+req.Code+" sudah dipakai pada kelompok "+req.Kind)
 			return
@@ -256,6 +260,10 @@ func (s *Server) handleUpdateMasterData(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		if errors.Is(err, repository.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, "entri master data tidak ditemukan")
+			return
+		}
+		if isCIDConflict(err) {
+			writeErr(w, http.StatusConflict, "CID sudah dipakai pelanggan lain")
 			return
 		}
 		if isUniqueViolation(err) {
@@ -464,10 +472,24 @@ func isUniqueViolation(err error) bool {
 	return false
 }
 
+// isCIDConflict melaporkan apakah pelanggaran UNIQUE berasal dari indeks CID
+// customer, agar pesan galat menyebut CID (bukan kode entri).
+func isCIDConflict(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "23505" && pgErr.ConstraintName == "ux_master_data_customer_cid"
+	}
+	return false
+}
+
 // validateCustomerMeta memvalidasi atribut pelanggan.
 //
 // Aturan: jenis wajib "personal" atau "corporate". Bila corporate, nama PIC
 // wajib diisi. Field lain opsional.
+//
+// CID (Customer ID dari sistem billing) opsional; bila diisi, hanya boleh
+// memuat huruf, angka, titik, garis bawah, dan tanda hubung (maks 64 karakter)
+// agar aman dipakai sebagai kunci pencarian.
 func validateCustomerMeta(meta map[string]any) error {
 	jenis := metaString(meta, "jenis")
 	if jenis == "" {
@@ -480,6 +502,19 @@ func validateCustomerMeta(meta map[string]any) error {
 	// PIC wajib untuk segmen non-personal (corporate/reseller/dedicated).
 	if jenis != models.CustomerPersonal && metaString(meta, "pic") == "" {
 		return errors.New("nama PIC wajib diisi untuk pelanggan corporate/reseller/dedicated")
+	}
+	// CID opsional; bila diisi harus berformat aman.
+	if cid := metaString(meta, "cid"); cid != "" {
+		if len(cid) > 64 {
+			return errors.New("CID maksimal 64 karakter")
+		}
+		for _, r := range cid {
+			ok := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' ||
+				r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-'
+			if !ok {
+				return errors.New("CID hanya boleh berisi huruf, angka, titik, garis bawah, dan tanda hubung")
+			}
+		}
 	}
 	return nil
 }

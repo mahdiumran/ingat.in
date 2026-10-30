@@ -30,6 +30,16 @@ func TestTicketClaimStatus(t *testing.T) {
 		{"request", "in_progress", ""},
 		{"change", "implementing", ""},
 
+		// RFS (Aktivasi/EWO): planned/postponed yang mulai dikerjakan tidak
+		// boleh tertinggal di planned.
+		{"rfs", "planned", "in_progress"},
+		{"rfs", "postponed", "in_progress"},
+		{"rfs", "in_progress", ""},
+		{"rfs", "in_progress_field", ""},
+		// State terminal RFS tidak pernah dimajukan otomatis.
+		{"rfs", "activated", ""},
+		{"rfs", "cancelled", ""},
+
 		// reopened/pending: transisi sah menurut workflow, jadi tetap dimajukan
 		// ke in_progress (tiket kembali dikerjakan).
 		{"incident", "pending_customer", "in_progress"},
@@ -51,7 +61,7 @@ func TestTicketClaimStatus(t *testing.T) {
 // TestTicketClaimStatusNonTicket memastikan tipe non-tiket tidak mendapat
 // status otomatis walau punya status bernama sama.
 func TestTicketClaimStatusNonTicket(t *testing.T) {
-	for _, itemType := range []string{"rfs", "task", "daily_task", "reminder", ""} {
+	for _, itemType := range []string{"task", "daily_task", "reminder", ""} {
 		if got := ticketClaimStatus(itemType, "new"); got != "" {
 			t.Errorf("ticketClaimStatus(%q, new) = %q, want kosong", itemType, got)
 		}

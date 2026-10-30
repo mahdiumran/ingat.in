@@ -39,14 +39,17 @@ type collaboratorRequest struct {
 //     karena transisinya tidak diizinkan workflow.
 //   - pending_customer/resolved (incident & request) -> in_progress, karena
 //     tiket tanpa owner yang diambil kembali harus jalan lagi.
+//   - planned/postponed (rfs) -> in_progress: Aktivasi/EWO yang mulai
+//     dikerjakan tidak boleh tertinggal di planned.
 //   - Status terminal tidak pernah dimajukan otomatis.
 func ticketClaimStatus(itemType, current string) string {
 	target := "in_progress"
 	if itemType == models.ItemChange {
 		target = "implementing"
 	}
-	// Hanya tipe tiket yang punya perilaku "mengerjakan" otomatis.
-	if itemType != models.ItemIncident && itemType != models.ItemRequest && itemType != models.ItemChange {
+	// Hanya tipe yang punya perilaku "mengerjakan" otomatis.
+	if itemType != models.ItemIncident && itemType != models.ItemRequest &&
+		itemType != models.ItemChange && itemType != models.ItemRFS {
 		return ""
 	}
 	// CanTransition menganggap from == to selalu sah; status yang sudah di
@@ -130,7 +133,7 @@ func (s *Server) handleAssignItem(w http.ResponseWriter, r *http.Request) {
 	// transisi yang sah menurut workflow (change memakai status implementing;
 	// tiket dari state lain tidak dipaksa pindah).
 	nextStatus := ""
-	if wasUnclaimed && claimsSelf && item.IsTicket() {
+	if wasUnclaimed && claimsSelf && (item.IsTicket() || item.ItemType == models.ItemRFS) {
 		nextStatus = ticketClaimStatus(item.ItemType, item.Status)
 	}
 
@@ -265,6 +268,14 @@ func (s *Server) handleAddCollaborator(w http.ResponseWriter, r *http.Request) {
 			map[string]any{"ref_no": item.RefNo, "username": target}, true)
 	}
 
+	// Tiket/RFS yang masih di state awal otomatis maju ke "in progress" saat
+	// ada penangan yang mulai mengerjakan (self-join). Tanpa ini status tetap
+	// planned/new walau sudah ada yang menangani.
+	joinedStatus := ""
+	if isSelfJoin {
+		joinedStatus = s.advanceStatusOnJoin(r, item, actor)
+	}
+
 	// Penangan tambahan HANYA user yang benar-benar menekan ikut/kerjakan.
 	// Ekspansi otomatis rekan setim dihapus (permintaan produk): daftar
 	// penangan berisi owner + user NOC yang ikut secara eksplisit.
@@ -274,8 +285,82 @@ func (s *Server) handleAddCollaborator(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok": true, "inserted": inserted, "collaborators": list,
+		"ok": true, "inserted": inserted, "status": joinedStatus, "collaborators": list,
 	})
+}
+
+// advanceStatusOnJoin memajukan status tiket/RFS ke "sedang dikerjakan" saat
+// seorang user ikut menangani. Mengembalikan status baru (kosong bila tidak
+// berubah).
+//
+// Aturan:
+//   - hanya tiket (incident/request/change) dan RFS;
+//   - hanya bila transisinya sah menurut workflow (mis. RFS planned →
+//     in_progress, change scheduled → implementing);
+//   - status terminal (activated/cancelled/closed/completed) tidak disentuh.
+func (s *Server) advanceStatusOnJoin(r *http.Request, item *models.WorkItem, actor string) string {
+	if item == nil {
+		return ""
+	}
+	target := ""
+	switch item.ItemType {
+	case models.ItemIncident, models.ItemRequest:
+		target = "in_progress"
+	case models.ItemChange:
+		target = "implementing"
+	case models.ItemRFS:
+		target = "in_progress"
+	default:
+		return ""
+	}
+	if item.Status == target {
+		return ""
+	}
+	wf := workitems.WorkflowFor(item.ItemType)
+	if wf == nil || !wf.CanTransition(item.Status, target) {
+		return ""
+	}
+	// Jangan pernah menutup/membuka item lewat jalur ini.
+	if res := wf.EvaluateTransitions(item.Status, target); res.IsClosing || res.IsReopen {
+		return ""
+	}
+
+	now := time.Now().UTC()
+	fields := map[string]any{"status": target, "updated_by_username": actor}
+	if item.FirstResponseAt == nil && target != wf.InitialState {
+		fields["first_response_at"] = now
+	}
+	err := s.store.Tx(r.Context(), func(tx pgx.Tx) error {
+		if err := s.store.UpdateWorkItemFields(r.Context(), tx, item.ID, fields); err != nil {
+			return err
+		}
+		if item.IsTicket() {
+			res := wf.EvaluateTransitions(item.Status, target)
+			if err := s.updateSLACycleOnStatus(r.Context(), tx, item, target, res, actor, now, wf.InitialState); err != nil {
+				return err
+			}
+		}
+		return workitems.AppendEvent(r.Context(), tx, workitems.EventInput{
+			WorkItemID: item.ID.String(),
+			EventType:  workitems.EventStatusChanged,
+			Actor:      actor,
+			FromValue:  item.Status,
+			ToValue:    target,
+			Detail:     map[string]any{"note": "Mulai dikerjakan (ikut menangani)"},
+		})
+	})
+	if err != nil {
+		return ""
+	}
+	s.audit(r, actor, "item.status_change", "work_item", item.ID.String(), map[string]any{
+		"ref_no": item.RefNo, "from": item.Status, "to": target, "auto": "collaborator_join",
+	}, true)
+	if item.IsTicket() {
+		s.maybeSendTicketSummary(r.Context(), now)
+	} else if item.ItemType == models.ItemRFS {
+		s.maybeSendRFSSummary(r.Context(), now)
+	}
+	return target
 }
 
 // handleRemoveCollaborator menghapus penangan tambahan dari sebuah tiket.

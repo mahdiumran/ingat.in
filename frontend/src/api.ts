@@ -702,10 +702,16 @@ export const workItemsApi = {
     }),
 
   addCollaborator: (id: string, username: string) =>
-    request<{ ok: boolean; inserted: boolean; collaborators: Collaborator[] }>(
-      `/items/${id}/collaborators`,
-      { method: 'POST', body: JSON.stringify({ username }) },
-    ),
+    request<{
+      ok: boolean
+      inserted: boolean
+      /** Status baru bila "ikut menangani" memajukan status (mis. planned → in_progress). */
+      status?: string
+      collaborators: Collaborator[]
+    }>(`/items/${id}/collaborators`, {
+      method: 'POST',
+      body: JSON.stringify({ username }),
+    }),
 
   removeCollaborator: (id: string, username: string) =>
     request<{ ok: boolean; removed: boolean; collaborators: Collaborator[] }>(
@@ -714,6 +720,13 @@ export const workItemsApi = {
     ),
 
   remove: (id: string) => request<{ ok: boolean }>(`/items/${id}`, { method: 'DELETE' }),
+
+  /** Tutup Aktivasi/EWO: status activated (Closed/Completed) + tahap aktivasi. */
+  rfsClose: (id: string, reason = '') =>
+    request<WorkItem>(`/items/${id}/rfs-close`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    }),
 
   /** F23: batalkan Aktivasi/EWO (RFS). */
   rfsCancel: (id: string, reason = '') =>

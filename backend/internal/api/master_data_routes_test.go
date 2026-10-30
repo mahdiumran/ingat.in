@@ -1,6 +1,9 @@
 package api
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestSlugify(t *testing.T) {
 	cases := map[string]string{
@@ -102,6 +105,12 @@ func TestValidateCustomerMeta(t *testing.T) {
 		{"reseller tanpa pic", map[string]any{"jenis": "reseller"}, true},
 		{"dedicated dengan pic", map[string]any{"jenis": "dedicated", "pic": "Budi"}, false},
 		{"dedicated tanpa pic", map[string]any{"jenis": "dedicated"}, true},
+		// CID (Customer ID) opsional; bila diisi harus berformat aman.
+		{"personal dengan cid", map[string]any{"jenis": "personal", "cid": "CID-000123"}, false},
+		{"cid dengan garis bawah & titik", map[string]any{"jenis": "personal", "cid": "cid_2026.01"}, false},
+		{"cid berisi spasi", map[string]any{"jenis": "personal", "cid": "CID 000123"}, true},
+		{"cid berisi karakter aneh", map[string]any{"jenis": "personal", "cid": "CID#12"}, true},
+		{"cid terlalu panjang", map[string]any{"jenis": "personal", "cid": strings.Repeat("a", 65)}, true},
 		{"meta nil", nil, true},
 	}
 	for _, tc := range cases {

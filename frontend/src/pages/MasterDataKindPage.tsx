@@ -14,6 +14,8 @@ type Toast = (kind: 'success' | 'error' | 'info' | 'warning', title: string, bod
 
 /** Meta pelanggan yang disimpan pada master_data.meta_json. */
 export type CustomerMeta = {
+  /** CID: identitas pelanggan dari sistem billing (mis. CID-000123). */
+  cid: string
   jenis: string
   pic: string
   phone: string
@@ -34,6 +36,7 @@ export function customerMeta(entry: MasterDataEntry): CustomerMeta {
   const m = (entry.meta ?? {}) as Record<string, unknown>
   const str = (k: string) => (m[k] == null ? '' : String(m[k]))
   return {
+    cid: str('cid'),
     jenis: str('jenis'),
     pic: str('pic'),
     phone: str('phone'),
@@ -98,6 +101,7 @@ export default function MasterDataKindPage({
         return (
           e.label.toLowerCase().includes(q) ||
           e.code.toLowerCase().includes(q) ||
+          cm.cid.toLowerCase().includes(q) ||
           cm.pic.toLowerCase().includes(q) ||
           cm.phone.toLowerCase().includes(q) ||
           cm.email.toLowerCase().includes(q)
@@ -365,6 +369,7 @@ function CustomerTable({
         <thead>
           <tr>
             <th>No. Pelanggan</th>
+            <th>CID</th>
             <th>Nama</th>
             <th>Jenis</th>
             <th>PIC</th>
@@ -385,6 +390,7 @@ function CustomerTable({
             return (
               <tr key={e.id}>
                 <td className="mono whitespace-nowrap text-label-md">{e.code}</td>
+                <td className="mono whitespace-nowrap text-label-md text-text-secondary">{cm.cid || '—'}</td>
                 <td className="font-medium">{e.label}</td>
                 <td>
                   <span
@@ -469,7 +475,7 @@ function ImportCustomerModal({
       <form onSubmit={(e) => void submit(e)} className="grid gap-4">
         <div className="rounded-control border border-outline-variant bg-surface-container px-4 py-3 text-body-s text-text-secondary">
           Kolom wajib: <b>nama</b>, <b>jenis</b> (personal/corporate/reseller/dedicated).
-          Kolom opsional: kode, pic, telepon, email, alamat, kapasitas. Kode yang sudah ada akan
+          Kolom opsional: kode, cid, pic, telepon, email, alamat, kapasitas. Kode yang sudah ada akan
           diperbarui.
         </div>
 
@@ -609,6 +615,7 @@ function CustomerForm({
   const initial = entry ? customerMeta(entry) : null
 
   const [name, setName] = useState(entry?.label ?? '')
+  const [cid, setCid] = useState(initial?.cid ?? '')
   const [jenis, setJenis] = useState(initial?.jenis || 'personal')
   const [pic, setPic] = useState(initial?.pic ?? '')
   const [phone, setPhone] = useState(initial?.phone ?? '')
@@ -625,6 +632,7 @@ function CustomerForm({
     setBusy(true)
     try {
       const metaPayload: CustomerMeta = {
+        cid: cid.trim(),
         jenis,
         // PIC hanya relevan untuk corporate.
         pic: corporate ? pic : '',
@@ -684,6 +692,23 @@ function CustomerForm({
             <input className="input mono" value={entry?.code ?? ''} disabled />
           </div>
         )}
+
+        <div>
+          <label className="label-field" htmlFor="cu-cid">
+            CID (Customer ID)
+          </label>
+          <input
+            id="cu-cid"
+            className="input mono"
+            value={cid}
+            onChange={(e) => setCid(e.target.value)}
+            placeholder="mis. CID-000123"
+            maxLength={64}
+          />
+          <p className="mt-1 text-label-sm text-text-secondary">
+            Opsional. Identitas pelanggan dari sistem billing; harus unik.
+          </p>
+        </div>
 
         <div className="grid gap-3.5 sm:grid-cols-2">
           <div>

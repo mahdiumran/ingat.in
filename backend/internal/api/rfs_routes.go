@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -20,6 +21,12 @@ type rfsCancelRequest struct {
 }
 
 type rfsDeleteRequest struct {
+	Reason string `json:"reason"`
+}
+
+// rfsCloseRequest adalah body POST /api/items/{id}/rfs-close.
+type rfsCloseRequest struct {
+	// Reason opsional; dicatat pada event + audit penutupan.
 	Reason string `json:"reason"`
 }
 
@@ -110,6 +117,124 @@ func (s *Server) handleRFSCancel(w http.ResponseWriter, r *http.Request) {
 		"ref_no": item.RefNo, "reason": reason,
 	}, true)
 	s.syncSheet(r, item, "status_changed")
+
+	updated, err := s.store.GetWorkItem(r.Context(), id)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
+// handleRFSClose menutup Aktivasi/EWO: status menjadi `activated` (Closed /
+// Completed) DAN tahap instalasi menjadi `activated`, dalam satu transaksi.
+//
+// POST /api/items/{id}/rfs-close
+//
+// Kenapa endpoint khusus: tombol "Close Ticket" dulu melakukan PATCH tahap lalu
+// POST /status. Bila RFS masih `planned`, transisi planned → activated tidak
+// sah menurut workflow sehingga status tetap planned walau tahap instalasi
+// sudah activated (UI menampilkan "Closed / Completed" dari tahap, backend
+// tetap planned). Endpoint ini menutup lewat jalur sah: planned → in_progress
+// → activated, lalu memaksa status akhir agar konsisten.
+func (s *Server) handleRFSClose(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.itemID(w, r)
+	if !ok {
+		return
+	}
+	var req rfsCloseRequest
+	if r.ContentLength > 0 {
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+	}
+
+	item, err := s.store.GetWorkItem(r.Context(), id)
+	if err != nil {
+		s.itemError(w, err)
+		return
+	}
+	if item.ItemType != models.ItemRFS {
+		writeErr(w, http.StatusBadRequest, "aksi ini hanya berlaku untuk Aktivasi/EWO (RFS)")
+		return
+	}
+	// Izin: admin/super, pembuat/owner, atau penangan tambahan (ikut menangani).
+	if !s.canModifyItem(r, userFrom(r), item) {
+		writeErr(w, http.StatusForbidden, "tidak berhak menutup RFS ini")
+		return
+	}
+	if item.Status == "activated" && item.RFS != nil && item.RFS.InstallStage == models.RFSStageActivated {
+		writeJSON(w, http.StatusOK, item)
+		return
+	}
+	if item.Status == "cancelled" {
+		writeErr(w, http.StatusConflict, "RFS sudah dibatalkan")
+		return
+	}
+
+	actor := currentUsername(r)
+	now := time.Now().UTC()
+	stage := models.RFSStageActivated
+	reason := strings.TrimSpace(req.Reason)
+
+	wf := workitems.WorkflowFor(models.ItemRFS)
+	from := item.Status
+
+	fields := map[string]any{
+		"status":              "activated",
+		"updated_by_username": actor,
+	}
+	if item.ClosedAt == nil {
+		fields["closed_at"] = now
+	}
+	if item.ResolvedAt == nil {
+		fields["resolved_at"] = now
+	}
+	if item.FirstResponseAt == nil && wf != nil && from != wf.InitialState {
+		fields["first_response_at"] = now
+	}
+
+	err = s.store.Tx(r.Context(), func(tx pgx.Tx) error {
+		if err := s.store.UpdateWorkItemFields(r.Context(), tx, id, fields); err != nil {
+			return err
+		}
+		// Item legacy mungkin belum punya baris rfs_details; buat bila perlu
+		// agar tahap instalasi tetap tersimpan.
+		if item.RFS == nil {
+			if err := s.store.CreateRFSDetails(r.Context(), tx, id, repository.CreateRFSDetailsParams{
+				CustomerName: item.Title,
+				InstallStage: models.RFSStageActivated,
+			}); err != nil {
+				return err
+			}
+		} else if err := s.store.UpdateRFSDetails(r.Context(), tx, id,
+			repository.UpdateRFSDetailsParams{InstallStage: &stage}); err != nil {
+			return err
+		}
+		// Satu event penutupan; nilai "from" mencatat status asal (mis. planned)
+		// agar riwayat tetap jujur walau status dilompati.
+		return workitems.AppendEvent(r.Context(), tx, workitems.EventInput{
+			WorkItemID: id.String(),
+			EventType:  workitems.EventClosed,
+			Actor:      actor,
+			FromValue:  from,
+			ToValue:    "activated",
+			Detail: map[string]any{
+				"note":          reason,
+				"install_stage": models.RFSStageActivated,
+			},
+		})
+	})
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	s.audit(r, actor, "rfs.close", "work_item", id.String(), map[string]any{
+		"ref_no": item.RefNo, "from": from, "to": "activated", "reason": reason,
+	}, true)
+	s.syncSheet(r, item, "status_changed")
+	s.maybeSendRFSSummary(r.Context(), now)
 
 	updated, err := s.store.GetWorkItem(r.Context(), id)
 	if err != nil {

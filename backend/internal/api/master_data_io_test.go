@@ -7,11 +7,11 @@ import (
 
 // TestMapCustomerHeader memastikan header CSV dikenali (F40).
 func TestMapCustomerHeader(t *testing.T) {
-	idx, err := mapCustomerHeader([]string{"kode", "nama", "jenis", "pic", "telepon", "email", "alamat", "kapasitas"})
+	idx, err := mapCustomerHeader([]string{"kode", "cid", "nama", "jenis", "pic", "telepon", "email", "alamat", "kapasitas"})
 	if err != nil {
 		t.Fatalf("header lengkap ditolak: %v", err)
 	}
-	if idx["nama"] != 1 || idx["jenis"] != 2 {
+	if idx["nama"] != 2 || idx["jenis"] != 3 || idx["cid"] != 1 {
 		t.Errorf("pemetaan salah: %v", idx)
 	}
 	if _, err := mapCustomerHeader([]string{"nama"}); err == nil {
