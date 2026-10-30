@@ -332,8 +332,14 @@ export function ItemDetail({
     if (!target) return
     setBusy(true)
     try {
-      await workItemsApi.addCollaborator(id, target)
-      toast('success', 'Penangan ditambahkan', target)
+      const result = await workItemsApi.addCollaborator(id, target)
+      // "Team ikut menangani": rekan setim otomatis ikut tercatat.
+      const teamAdded = result.team_added ?? []
+      toast(
+        'success',
+        'Penangan ditambahkan',
+        teamAdded.length ? `${target} + ${teamAdded.length} rekan tim` : target,
+      )
       setCollabInput('')
       detail.reload()
     } catch (err) {

@@ -232,11 +232,12 @@ export default function Rfs({
         toast('success', 'RFS mulai dikerjakan', `${refNo} ditetapkan kepada ${user.username}`)
       } else {
         const result = await workItemsApi.addCollaborator(id, user.username)
-        toast(
-          result.inserted ? 'success' : 'info',
-          result.inserted ? 'Berhasil mengikuti RFS' : 'Sudah mengikuti RFS',
-          refNo,
-        )
+        // "Team ikut menangani": rekan setim otomatis tercatat sebagai penangan.
+        const teamAdded = result.team_added ?? []
+        const detail = teamAdded.length
+          ? `${refNo} — ${teamAdded.length} rekan tim ikut tercatat`
+          : refNo
+        toast(result.inserted ? 'success' : 'info', result.inserted ? 'Berhasil mengikuti RFS' : 'Sudah mengikuti RFS', detail)
       }
       items.reload()
     } catch (err) {
@@ -467,6 +468,7 @@ export default function Rfs({
                   <th>RFS (WIB)</th>
                   <th>Hitung mundur</th>
                   <th>Status</th>
+                  <th>Penangan</th>
                   <th>Tag</th>
                   <th className="w-px whitespace-nowrap text-right">Aksi</th>
                 </tr>
@@ -522,6 +524,29 @@ export default function Rfs({
                       <td className={`mono whitespace-nowrap text-label-md ${cd.tone}`}>{cd.text}</td>
                       <td>
                         <StatusBadge status={statusLabel(it.status)} tone={statusTone[it.status]} />
+                      </td>
+                      <td className="max-w-[180px]">
+                        {it.owner_username ? (
+                          <div className="flex flex-wrap items-center gap-1">
+                            <span
+                              className="mono rounded-full bg-surface-container px-2 py-0.5 text-label-sm font-semibold"
+                              title={`Owner: ${it.owner_username}`}
+                            >
+                              {it.owner_username}
+                            </span>
+                            {(it.collaborators?.length ?? 0) > 0 && (
+                              <span
+                                className="inline-flex items-center gap-0.5 rounded-full border border-outline-variant px-1.5 py-0.5 text-label-sm text-text-secondary"
+                                title={`Ikut menangani: ${(it.collaborators ?? []).map((c) => c.username).join(', ')}`}
+                              >
+                                <span className="material-symbols-outlined text-[13px]">group</span>
+                                {it.collaborators?.length}
+                              </span>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-label-sm text-text-secondary">belum diambil</span>
+                        )}
                       </td>
                       <td className="max-w-[160px]">
                         <TagList tags={it.tags} colors={tagColors} />

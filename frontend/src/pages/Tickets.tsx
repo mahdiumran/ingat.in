@@ -248,10 +248,15 @@ export default function Tickets({
         toast('success', 'Tiket mulai dikerjakan', `${item.ref_no} ditetapkan kepada ${user.username}`)
       } else {
         const result = await workItemsApi.addCollaborator(item.id, user.username)
+        // "Team ikut menangani": rekan setim otomatis tercatat sebagai penangan.
+        const teamAdded = result.team_added ?? []
+        const detail = teamAdded.length
+          ? `${item.ref_no} — ${teamAdded.length} rekan tim ikut tercatat`
+          : item.ref_no
         toast(
           result.inserted ? 'success' : 'info',
           result.inserted ? 'Berhasil mengikuti tiket' : 'Sudah mengikuti tiket',
-          item.ref_no,
+          detail,
         )
       }
       items.reload()

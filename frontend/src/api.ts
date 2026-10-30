@@ -702,10 +702,16 @@ export const workItemsApi = {
     }),
 
   addCollaborator: (id: string, username: string) =>
-    request<{ ok: boolean; inserted: boolean; collaborators: Collaborator[] }>(
-      `/items/${id}/collaborators`,
-      { method: 'POST', body: JSON.stringify({ username }) },
-    ),
+    request<{
+      ok: boolean
+      inserted: boolean
+      /** Rekan setim yang otomatis ikut tercatat ("team ikut menangani"). */
+      team_added?: string[]
+      collaborators: Collaborator[]
+    }>(`/items/${id}/collaborators`, {
+      method: 'POST',
+      body: JSON.stringify({ username }),
+    }),
 
   removeCollaborator: (id: string, username: string) =>
     request<{ ok: boolean; removed: boolean; collaborators: Collaborator[] }>(

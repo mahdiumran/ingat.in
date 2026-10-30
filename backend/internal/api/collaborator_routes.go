@@ -203,6 +203,13 @@ func (s *Server) handleAssignItem(w http.ResponseWriter, r *http.Request) {
 		s.maybeSendTicketSummary(r.Context(), now)
 	}
 
+	// Keputusan produk ("team ikut menangani"): mengambil item untuk diri
+	// sendiri juga mencatat seluruh anggota tim sebagai penangan tambahan,
+	// sehingga rekan setim dapat memperbarui/menutup item yang sama.
+	if claimsSelf {
+		s.addTeamCollaborators(r, item, actor)
+	}
+
 	updated, err := s.store.GetWorkItem(r.Context(), item.ID)
 	if err != nil {
 		writeInternalError(w, err)
@@ -234,25 +241,20 @@ func (s *Server) handleAddCollaborator(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	{
-		actor0 := currentUsername(r)
-		target0 := strings.TrimSpace(req.Username)
-		if target0 == "" {
-			target0 = actor0
-		}
-		u := userFrom(r)
-		isSelfJoin := strings.EqualFold(target0, actor0)
-		if !isSelfJoin && !(canJoinHandling(u, item) || s.canJoinItemTeam(r, u, item)) {
-			writeErr(w, http.StatusForbidden, "tidak berhak mengubah item ini")
-			return
-		}
-	}
 	actor := currentUsername(r)
 	target := strings.TrimSpace(req.Username)
 	if target == "" {
 		target = actor // default: diri sendiri (self-claim)
 	}
-	if !canManageItem(userFrom(r), item) && !strings.EqualFold(target, actor) {
+	isSelfJoin := strings.EqualFold(target, actor)
+	if !isSelfJoin {
+		u := userFrom(r)
+		if !canJoinHandling(u, item) && !s.canJoinItemTeam(r, u, item) {
+			writeErr(w, http.StatusForbidden, "tidak berhak mengubah item ini")
+			return
+		}
+	}
+	if !canManageItem(userFrom(r), item) && !isSelfJoin {
 		writeErr(w, http.StatusForbidden, "hanya dapat menambahkan diri sendiri")
 		return
 	}
@@ -270,12 +272,71 @@ func (s *Server) handleAddCollaborator(w http.ResponseWriter, r *http.Request) {
 			map[string]any{"ref_no": item.RefNo, "username": target}, true)
 	}
 
+	// Keputusan produk: saat operator IKUT SENDIRI, seluruh anggota timnya
+	// ikut tercatat sebagai penangan ("team ikut menangani"). Admin yang
+	// menambahkan orang lain tidak memicu ekspansi tim.
+	var teamAdded []string
+	if isSelfJoin {
+		teamAdded = s.addTeamCollaborators(r, item, actor)
+	}
+
 	list, err := s.store.ListCollaborators(r.Context(), item.ID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "inserted": inserted, "collaborators": list})
+	if teamAdded == nil {
+		teamAdded = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "inserted": inserted, "team_added": teamAdded, "collaborators": list,
+	})
+}
+
+// addTeamCollaborators mencatat SELURUH anggota tim user sebagai penangan
+// tambahan item ("team ikut menangani").
+//
+// Dipakai hanya pada jalur self-join ("Ikuti"/"Ikut RFS"/"Kerjakan") agar
+// rekan setim otomatis ikut tercatat dan berhak memperbarui item. Best-effort:
+// kegagalan lookup tim tidak menggagalkan aksi utama. Actor sendiri dilewati
+// karena sudah ditambahkan pemanggil.
+func (s *Server) addTeamCollaborators(r *http.Request, item *models.WorkItem, actor string) []string {
+	u := userFrom(r)
+	if u == nil || item == nil || u.TeamID == nil {
+		return nil
+	}
+	// Hanya tiket & Aktivasi/EWO yang memakai konsep "ikut menangani".
+	if !item.IsTicket() && item.ItemType != models.ItemRFS {
+		return nil
+	}
+	members, err := s.store.ListTeamMemberUsernames(r.Context(), *u.TeamID)
+	if err != nil {
+		return nil
+	}
+	added := make([]string, 0, len(members))
+	for _, name := range members {
+		name = strings.TrimSpace(name)
+		if name == "" || strings.EqualFold(name, actor) {
+			continue
+		}
+		inserted, err := s.store.AddCollaborator(r.Context(), item.ID, name, actor)
+		if err != nil {
+			continue
+		}
+		if inserted {
+			added = append(added, name)
+		}
+	}
+	if len(added) == 0 {
+		return nil
+	}
+	_ = s.store.AppendEventSimple(r.Context(), item.ID, workitems.EventAssigned, map[string]any{
+		"team_id":       u.TeamID.String(),
+		"collaborators": added,
+	})
+	s.audit(r, actor, "item.collaborator_team_add", "work_item", item.ID.String(),
+		map[string]any{"ref_no": item.RefNo, "team_id": u.TeamID.String(), "usernames": added}, true)
+	return added
 }
 
 // handleRemoveCollaborator menghapus penangan tambahan dari sebuah tiket.

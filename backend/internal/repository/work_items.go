@@ -220,11 +220,18 @@ func (s *Store) loadExtensions(ctx context.Context, wi *models.WorkItem) error {
 			wi.ReopenCount = d.ReopenCount
 		}
 	}
-	// F20: penangan tambahan + siklus SLA (hanya untuk tiket).
-	if wi.IsTicket() {
+	// F20: penangan tambahan (tiket + Aktivasi/EWO) dan siklus SLA (tiket saja).
+	//
+	// Catatan fix: daftar penangan pada handler list sudah memuat RFS, tetapi
+	// detail item hanya memuat untuk IsTicket() — akibatnya RFS selalu tampil
+	// "Ikut Menangani (0)" dan pemeriksaan izin isCollaboratorOf gagal sehingga
+	// penangan tidak dapat mengubah/menutup RFS. Karena itu RFS ikut dimuat.
+	if wi.IsTicket() || wi.ItemType == models.ItemRFS {
 		if cols, err := s.ListCollaborators(ctx, wi.ID); err == nil {
 			wi.Collaborators = cols
 		}
+	}
+	if wi.IsTicket() {
 		if cycles, err := s.ListSLACycles(ctx, wi.ID); err == nil {
 			wi.SLACycles = cycles
 		}

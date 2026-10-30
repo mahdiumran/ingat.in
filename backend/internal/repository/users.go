@@ -78,6 +78,33 @@ func (s *Store) ListUsers(ctx context.Context) ([]models.User, error) {
 	return out, rows.Err()
 }
 
+// ListTeamMemberUsernames mengembalikan username user AKTIF pada sebuah tim.
+//
+// Dipakai fitur "ikut menangani": saat seorang operator ikut menangani tiket/
+// RFS, seluruh anggota timnya ikut tercatat sebagai penangan (keputusan
+// produk). Role viewer/customer dikecualikan karena tidak boleh menulis.
+func (s *Store) ListTeamMemberUsernames(ctx context.Context, teamID uuid.UUID) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT username FROM users
+		WHERE team_id=$1 AND is_active
+		  AND role <> ALL($2::text[])
+		ORDER BY username`, teamID, []string{models.RoleViewer, models.RoleCustomer})
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		out = append(out, name)
+	}
+	return out, rows.Err()
+}
+
 // TouchLastLogin memperbarui waktu login terakhir.
 func (s *Store) TouchLastLogin(ctx context.Context, userID uuid.UUID) error {
 	_, err := s.pool.Exec(ctx, `UPDATE users SET last_login_at = now() WHERE id=$1`, userID)

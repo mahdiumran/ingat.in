@@ -106,6 +106,21 @@ func TestIsCollaboratorOf(t *testing.T) {
 	if isCollaboratorOf(nil, item) || isCollaboratorOf(&models.User{Username: "x"}, nil) {
 		t.Error("argumen nil harus false")
 	}
+
+	// Regresi: penangan RFS (Aktivasi/EWO) dulu tidak terdeteksi karena
+	// loadExtensions hanya memuat collaborator untuk IsTicket().
+	rfs := &models.WorkItem{
+		ItemType: models.ItemRFS,
+		Collaborators: []models.Collaborator{
+			{Username: "field1"},
+		},
+	}
+	if !isCollaboratorOf(&models.User{Username: "FIELD1", Role: models.RoleNOC}, rfs) {
+		t.Error("penangan RFS tidak terdeteksi; penangan tidak akan bisa mengubah/menutup RFS")
+	}
+	if isCollaboratorOf(&models.User{Username: "field2", Role: models.RoleNOC}, rfs) {
+		t.Error("field2 bukan penangan RFS tapi terdeteksi")
+	}
 }
 
 // TestCanJoinHandling: self-join collaborator tiket/RFS boleh walau owner
