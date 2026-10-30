@@ -1137,13 +1137,17 @@ func (s *Server) handleChangeStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// RFS: status awal (`new`) hanya boleh maju ke in_progress setelah jadwal
-	// tiba. Tombol "Mulai Kerjakan" memakai endpoint /rfs-start, tetapi jalur
-	// generik ini juga dijaga agar aturan jadwal tidak bisa dilewati.
+	// RFS: maju ke in_progress sebelum jadwal tiba tetap diizinkan (mis.
+	// pelanggan minta aktivasi lebih cepat), tetapi alasan wajib agar
+	// pengecualian tercatat pada event + audit.
+	earlyRFSStart := false
 	if item.ItemType == models.ItemRFS && req.Status == "in_progress" {
-		if at, blocked := rfsStartGate(item, time.Now().UTC()); blocked {
-			writeErr(w, http.StatusConflict, rfsStartGateMessage(at))
-			return
+		if at, pending := rfsSchedulePending(item, time.Now().UTC()); pending {
+			if strings.TrimSpace(req.Note) == "" {
+				writeErr(w, http.StatusBadRequest, rfsEarlyStartMessage(at))
+				return
+			}
+			earlyRFSStart = true
 		}
 	}
 
@@ -1208,7 +1212,7 @@ func (s *Server) handleChangeStatus(w http.ResponseWriter, r *http.Request) {
 			Actor:      actor,
 			FromValue:  item.Status,
 			ToValue:    req.Status,
-			Detail:     map[string]any{"note": req.Note},
+			Detail:     statusEventDetail(req.Note, earlyRFSStart, item.ExpireAt),
 		})
 	})
 	if err != nil {
@@ -1222,9 +1226,14 @@ func (s *Server) handleChangeStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	updated.ComputeSLA(time.Now().UTC())
-	s.audit(r, "", "item.status_change", "work_item", id.String(), map[string]any{
+	auditDetail := map[string]any{
 		"ref_no": updated.RefNo, "from": item.Status, "to": req.Status,
-	}, true)
+	}
+	if earlyRFSStart {
+		auditDetail["early_start"] = true
+		auditDetail["reason"] = req.Note
+	}
+	s.audit(r, "", "item.status_change", "work_item", id.String(), auditDetail, true)
 
 	// F18: perbarui status pada spreadsheet (best-effort, task saja).
 	s.syncSheet(r, updated, "status_changed")
@@ -1605,6 +1614,22 @@ func isTerminalState(wf *workitems.Workflow, state string) bool {
 		}
 	}
 	return false
+}
+
+// statusEventDetail menyusun detail event perubahan status.
+//
+// Bila RFS dimulai sebelum jadwalnya tiba, detail diberi penanda `early_start`
+// + alasan + jadwal asal sehingga riwayat jujur menunjukkan pengecualian.
+func statusEventDetail(note string, earlyStart bool, schedule *time.Time) map[string]any {
+	detail := map[string]any{"note": note}
+	if earlyStart {
+		detail["early_start"] = true
+		detail["reason"] = strings.TrimSpace(note)
+		if schedule != nil {
+			detail["schedule"] = schedule.In(wibLocation).Format(time.RFC3339)
+		}
+	}
+	return detail
 }
 
 // cleanErrMsg menghapus penanda internal dari pesan error sebelum dikirim ke klien.

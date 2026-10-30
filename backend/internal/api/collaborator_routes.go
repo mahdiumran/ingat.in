@@ -135,10 +135,11 @@ func (s *Server) handleAssignItem(w http.ResponseWriter, r *http.Request) {
 	nextStatus := ""
 	if wasUnclaimed && claimsSelf && (item.IsTicket() || item.ItemType == models.ItemRFS) {
 		nextStatus = ticketClaimStatus(item.ItemType, item.Status)
-		// RFS: mengambil sebelum jadwal tiba tidak memajukan status; penangan
-		// menekan "Mulai Kerjakan" saat jadwalnya sudah masuk.
+		// RFS sebelum jadwal: klaim hanya mencatat owner/penangan. Pengerjaan
+		// lebih awal wajib beralasan, dan jalur ini tidak membawa alasan —
+		// penangan memakai tombol "Mulai Kerjakan" (POST /rfs-start).
 		if nextStatus != "" && item.ItemType == models.ItemRFS {
-			if _, blocked := rfsStartGate(item, time.Now().UTC()); blocked {
+			if _, pending := rfsSchedulePending(item, time.Now().UTC()); pending {
 				nextStatus = ""
 			}
 		}
@@ -304,7 +305,9 @@ func (s *Server) handleAddCollaborator(w http.ResponseWriter, r *http.Request) {
 //   - hanya tiket (incident/request/change) dan RFS;
 //   - hanya bila transisinya sah menurut workflow (mis. RFS new →
 //     in_progress, change scheduled → implementing);
-//   - RFS hanya dimajukan bila jadwalnya sudah tiba;
+//   - RFS yang jadwalnya belum tiba TIDAK dimajukan di sini: "ikut menangani"
+//     hanya mencatat penangan. Untuk mulai bekerja lebih awal, penangan
+//     menekan "Mulai Kerjakan" yang mewajibkan alasan (tercatat early_start);
 //   - status terminal (activated/cancelled/closed/completed) tidak disentuh.
 func (s *Server) advanceStatusOnJoin(r *http.Request, item *models.WorkItem, actor string) string {
 	if item == nil {
@@ -332,10 +335,11 @@ func (s *Server) advanceStatusOnJoin(r *http.Request, item *models.WorkItem, act
 	if res := wf.EvaluateTransitions(item.Status, target); res.IsClosing || res.IsReopen {
 		return ""
 	}
-	// RFS: mulai dikerjakan hanya setelah jadwal tiba. Sebelum itu, ikut
-	// menangani hanya mencatat penangan tanpa memajukan status.
+	// RFS sebelum jadwal: pengerjaan lebih awal wajib beralasan, dan jalur ini
+	// tidak membawa alasan. Status dibiarkan apa adanya; penangan memakai
+	// tombol "Mulai Kerjakan" (POST /rfs-start) yang mencatat alasannya.
 	if item.ItemType == models.ItemRFS {
-		if _, blocked := rfsStartGate(item, time.Now().UTC()); blocked {
+		if _, pending := rfsSchedulePending(item, time.Now().UTC()); pending {
 			return ""
 		}
 	}

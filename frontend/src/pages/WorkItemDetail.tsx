@@ -104,6 +104,8 @@ export function ItemDetail({
   const [uploading, setUploading] = useState(false)
   // F23: Aktivasi/EWO — modal cancel/hapus ber-alasan.
   const [rfsReason, setRfsReason] = useState<{ mode: 'cancel' | 'delete'; reason: string } | null>(null)
+  // Mulai lebih awal dari jadwal: alasan wajib (pengecualian tercatat).
+  const [rfsStartReason, setRfsStartReason] = useState<{ reason: string } | null>(null)
   // F25: data teknis aktivasi RFS (dapat disunting).
   const [activation, setActivation] = useState({
     ip_address: '',
@@ -234,23 +236,42 @@ export function ItemDetail({
   /**
    * rfsStart memulai pengerjaan Aktivasi/EWO: new → in_progress.
    *
-   * Hanya tersedia setelah jadwal RFS tiba; sebelum itu tombol nonaktif dan
-   * alasannya tampil pada tooltip. Backend menolak permintaan terlalu awal.
+   * Jadwal RFS hanya pengingat: bila jadwal belum tiba, penangan tetap boleh
+   * memulai asalkan mengisi alasan (mis. pelanggan minta aktivasi lebih cepat).
+   * Alasan wajib dan dicatat backend sebagai pengecualian (`early_start`).
    *
    * RFS tanpa owner: penekan tombol sekaligus menjadi owner (dan tercatat
    * sebagai penangan) karena status tidak boleh "in progress" tanpa penangan.
    */
-  async function rfsStart() {
+  function rfsStart() {
+    if (!item) return
+    if (rfsGate.needsReason) {
+      setRfsStartReason({ reason: '' })
+      return
+    }
+    void runRFSStart('')
+  }
+
+  /** runRFSStart menjalankan aksi mulai dengan alasan (kosong = sesuai jadwal). */
+  async function runRFSStart(reason: string) {
     if (!item) return
     setBusy(true)
     try {
       if (!item.owner_username && user?.username) {
-        // assign() memajukan status ke in_progress karena jadwal sudah tiba.
+        // Klaim dulu agar status tidak "in progress" tanpa penangan. Klaim
+        // sebelum jadwal hanya mencatat owner; status dimajukan rfs-start.
         await workItemsApi.assign(id, user.username)
-      } else {
-        await workItemsApi.rfsStart(id, 'Mulai kerjakan')
       }
-      toast('success', 'RFS mulai dikerjakan', item.ref_no)
+      await workItemsApi.rfsStart(
+        id,
+        reason ? 'Mulai dikerjakan lebih awal' : 'Mulai kerjakan',
+        reason,
+      )
+      toast(
+        'success',
+        reason ? 'RFS mulai dikerjakan (lebih awal)' : 'RFS mulai dikerjakan',
+        reason ? `Alasan: ${reason}` : item.ref_no,
+      )
       detail.reload()
     } catch (err) {
       toast('error', 'Gagal memulai RFS', err instanceof Error ? err.message : undefined)
@@ -563,8 +584,8 @@ export function ItemDetail({
   const reassignUser = (users.data?.users ?? []).find((u) => u.username === reassign?.username)
   /** canTransition melaporkan apakah transisi ke status tertentu diizinkan. */
   const canTransition = (target: string) => nextStates.includes(target)
-  // RFS: tombol "Mulai Kerjakan" hanya aktif setelah jadwal tiba; "Close Ticket"
-  // baru tersedia setelah pengerjaan dimulai.
+  // RFS: "Mulai Kerjakan" boleh lebih awal dari jadwal (wajib alasan);
+  // "Close Ticket" baru tersedia setelah pengerjaan dimulai.
   const rfsGate = rfsStartGate(item?.status, item?.expire_at, item?.rfs?.install_stage)
   const rfsStarted =
     !!item &&
@@ -1519,7 +1540,7 @@ export function ItemDetail({
                             className="btn-brand"
                             onClick={rfsStart}
                             disabled={busy || !rfsGate.allowed}
-                            title={rfsGate.allowed ? 'Mulai kerjakan RFS (status menjadi In Progress)' : rfsGate.reason}
+                            title={rfsGate.reason}
                           >
                             <span className="material-symbols-outlined text-[18px]">play_arrow</span>
                             Mulai Kerjakan
@@ -1530,8 +1551,12 @@ export function ItemDetail({
                             Penanganan Lapangan
                           </button>
                         )}
-                        {!rfsGate.allowed && !rfsStarted && (
-                          <p className="basis-full text-label-sm text-text-secondary">{rfsGate.reason}.</p>
+                        {!rfsStarted && (
+                          <p className="basis-full text-label-sm text-text-secondary">
+                            {rfsGate.needsReason
+                              ? `${rfsGate.reason}.`
+                              : rfsGate.reason}
+                          </p>
                         )}
                         <button className="btn-secondary" onClick={() => changeStatus('pending_troubleshoot')} disabled={busy || !canTransition('pending_troubleshoot')}>
                           <span className="material-symbols-outlined text-[18px]">handyman</span>
@@ -1761,6 +1786,57 @@ export function ItemDetail({
               onChange={(e) => setRfsReason({ ...rfsReason, reason: e.target.value })}
               placeholder={rfsReason.mode === 'delete' ? 'Tulis alasan penghapusan…' : 'Opsional'}
             />
+          </div>
+        </Modal>
+      )}
+
+      {/* Mulai lebih awal dari jadwal RFS — alasan wajib. */}
+      {rfsStartReason && (
+        <Modal
+          title={`Mulai lebih awal — ${item?.ref_no ?? ''}`}
+          width="sm"
+          onClose={() => setRfsStartReason(null)}
+          footer={
+            <>
+              <button className="btn-secondary" onClick={() => setRfsStartReason(null)} disabled={busy}>
+                Batal
+              </button>
+              <button
+                className="btn-brand"
+                onClick={() => {
+                  const reason = rfsStartReason.reason.trim()
+                  if (!reason) {
+                    toast('error', 'Alasan wajib diisi', 'Pengerjaan sebelum jadwal harus beralasan')
+                    return
+                  }
+                  setRfsStartReason(null)
+                  void runRFSStart(reason)
+                }}
+                disabled={busy}
+              >
+                {busy ? 'Memproses…' : 'Mulai Kerjakan'}
+              </button>
+            </>
+          }
+        >
+          <div className="space-y-3">
+            <div className="flex items-start gap-2.5 rounded-control border border-border bg-surface-container-low p-3 text-body-sm">
+              <span className="material-symbols-outlined text-[19px] shrink-0">schedule</span>
+              <span>{rfsGate.reason}. Pengerjaan lebih awal tetap diizinkan asalkan alasannya dicatat.</span>
+            </div>
+            <div>
+              <label className="label-field" htmlFor="rfs-start-reason">
+                Alasan mulai lebih awal (wajib)
+              </label>
+              <textarea
+                id="rfs-start-reason"
+                className="input h-24 py-2"
+                autoFocus
+                value={rfsStartReason.reason}
+                onChange={(e) => setRfsStartReason({ reason: e.target.value })}
+                placeholder="Mis. pelanggan meminta aktivasi lebih cepat…"
+              />
+            </div>
           </div>
         </Modal>
       )}

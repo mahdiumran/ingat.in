@@ -34,19 +34,27 @@ type rfsCloseRequest struct {
 type rfsStartRequest struct {
 	// Note opsional; dicatat pada event mulai dikerjakan.
 	Note string `json:"note"`
+	// Reason wajib bila jadwal RFS (expire_at) belum tiba: aktivasi lebih awal
+	// adalah pengecualian yang harus dipertanggungjawabkan (mis. pelanggan
+	// meminta layanan aktif sebelum tenggat).
+	Reason string `json:"reason"`
 }
 
-// rfsStartGate memeriksa apakah RFS boleh masuk status "in progress".
+// rfsSchedulePending melaporkan apakah RFS belum mencapai jadwal (expire_at).
 //
-// Aturan produk: RFS baru (status `new`) baru boleh mulai dikerjakan setelah
-// jadwalnya tiba (expire_at) DAN penangan menekan tombol "Mulai Kerjakan".
-// Fungsi mengembalikan jadwal (zona WIB) bila belum waktunya.
-func rfsStartGate(item *models.WorkItem, now time.Time) (time.Time, bool) {
+// Kebijakan produk: jadwal BUKAN penghalang mutlak. RFS boleh dikerjakan
+// lebih awal (mis. pelanggan minta aktivasi sebelum tenggat) asalkan alasan
+// diisi; alasan itu dicatat pada event + audit. Fungsi ini hanya memberi tahu
+// bahwa pengecualian diperlukan, dan mengembalikan jadwal dalam zona WIB.
+//
+// Status di luar state awal (sudah dikerjakan) tidak pernah dianggap "pending"
+// agar pekerjaan yang berjalan tidak tersangkut bila jadwal diubah.
+func rfsSchedulePending(item *models.WorkItem, now time.Time) (time.Time, bool) {
 	if item == nil || item.ItemType != models.ItemRFS {
 		return time.Time{}, false
 	}
-	// Hanya state awal yang dibatasi jadwal. `planned` adalah status legacy
-	// (sebelum migrasi 00032) yang tetap diperlakukan sebagai "belum mulai".
+	// `planned` adalah status legacy (sebelum migrasi 00032) yang tetap
+	// diperlakukan sebagai "belum mulai".
 	if item.Status != "new" && item.Status != "planned" {
 		return time.Time{}, false
 	}
@@ -59,10 +67,12 @@ func rfsStartGate(item *models.WorkItem, now time.Time) (time.Time, bool) {
 	return item.ExpireAt.In(wibLocation), true
 }
 
-// rfsStartGateMessage menyusun pesan penolakan saat jadwal RFS belum tiba.
-func rfsStartGateMessage(at time.Time) string {
+// rfsEarlyStartMessage menyusun pesan saat jadwal belum tiba dan alasan belum
+// diisi. Pesan menegaskan bahwa aktivasi lebih awal TETAP BOLEH, asal beralasan.
+func rfsEarlyStartMessage(at time.Time) string {
 	return "RFS dijadwalkan " + at.Format("02 Jan 2006 15:04 MST") +
-		"; tombol Mulai Kerjakan baru aktif setelah jadwal tiba"
+		". Aktivasi lebih awal tetap dapat dilakukan — isi alasan lebih dulu " +
+		"(mis. permintaan pelanggan) agar tercatat pada riwayat"
 }
 
 // handleRFSStart memulai pengerjaan Aktivasi/EWO: status `new` menjadi
@@ -70,8 +80,11 @@ func rfsStartGateMessage(at time.Time) string {
 //
 // POST /api/items/{id}/rfs-start
 //
-// Hanya boleh dipanggil setelah jadwal RFS (expire_at) tiba; sebelum itu
-// permintaan ditolak 409 agar status tidak melompat sebelum waktunya.
+// Jadwal bukan penghalang: bila expire_at belum tiba, pengerjaan lebih awal
+// tetap diizinkan asalkan `reason` diisi (mis. pelanggan minta aktivasi lebih
+// cepat). Alasan tersebut dicatat pada event + audit sebagai pengecualian,
+// sehingga status "in progress sebelum jadwal" tidak pernah terjadi diam-diam.
+//
 // Idempoten: RFS yang sudah in_progress/in_progress_field dikembalikan apa
 // adanya tanpa mengubah apa pun.
 func (s *Server) handleRFSStart(w http.ResponseWriter, r *http.Request) {
@@ -110,9 +123,16 @@ func (s *Server) handleRFSStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now().UTC()
-	if at, blocked := rfsStartGate(item, now); blocked {
-		writeErr(w, http.StatusConflict, rfsStartGateMessage(at))
-		return
+	reason := strings.TrimSpace(req.Reason)
+	// Jadwal belum tiba: boleh lanjut, tetapi alasan wajib agar pengecualian
+	// tercatat. Tanpa alasan → 400 dengan pesan yang menjelaskan pilihannya.
+	early := false
+	if at, pending := rfsSchedulePending(item, now); pending {
+		if reason == "" {
+			writeErr(w, http.StatusBadRequest, rfsEarlyStartMessage(at))
+			return
+		}
+		early = true
 	}
 
 	wf := workitems.WorkflowFor(models.ItemRFS)
@@ -136,6 +156,17 @@ func (s *Server) handleRFSStart(w http.ResponseWriter, r *http.Request) {
 		fields["first_response_at"] = now
 	}
 
+	detail := map[string]any{"note": note}
+	if early {
+		// Tandai eksplisit agar laporan/riwayat dapat membedakan pengerjaan
+		// sebelum jadwal dari pengerjaan normal.
+		detail["early_start"] = true
+		detail["reason"] = reason
+		if item.ExpireAt != nil {
+			detail["schedule"] = item.ExpireAt.In(wibLocation).Format(time.RFC3339)
+		}
+	}
+
 	err = s.store.Tx(r.Context(), func(tx pgx.Tx) error {
 		if err := s.store.UpdateWorkItemFields(r.Context(), tx, id, fields); err != nil {
 			return err
@@ -146,7 +177,7 @@ func (s *Server) handleRFSStart(w http.ResponseWriter, r *http.Request) {
 			Actor:      actor,
 			FromValue:  item.Status,
 			ToValue:    "in_progress",
-			Detail:     map[string]any{"note": note},
+			Detail:     detail,
 		})
 	})
 	if err != nil {
@@ -154,9 +185,14 @@ func (s *Server) handleRFSStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.audit(r, actor, "rfs.start", "work_item", id.String(), map[string]any{
+	auditDetail := map[string]any{
 		"ref_no": item.RefNo, "from": item.Status, "to": "in_progress", "note": note,
-	}, true)
+	}
+	if early {
+		auditDetail["early_start"] = true
+		auditDetail["reason"] = reason
+	}
+	s.audit(r, actor, "rfs.start", "work_item", id.String(), auditDetail, true)
 	s.syncSheet(r, item, "status_changed")
 	s.maybeSendRFSSummary(r.Context(), now)
 

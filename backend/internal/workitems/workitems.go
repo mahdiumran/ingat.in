@@ -267,7 +267,8 @@ func DefaultWorkflows() map[string]*Workflow {
 		},
 		// Alur Aktivasi/EWO:
 		//   new  → dibuat admin/sales (belum dikerjakan, jadwal belum tentu tiba)
-		//   in_progress → penangan menekan "Mulai Kerjakan" setelah jadwal tiba
+		//   in_progress → penangan menekan "Mulai Kerjakan" (boleh lebih awal
+		//                 dari jadwal, wajib beralasan; lihat rfsSchedulePending)
 		//   activated   → penangan menekan "Close Ticket" (Closed/Completed)
 		//
 		// `planned` tidak lagi dipakai sebagai status (diganti `new`); nilai itu

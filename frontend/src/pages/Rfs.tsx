@@ -96,6 +96,13 @@ export default function Rfs({
   // F23: modal Cancel (alasan) & Delete (alasan wajib).
   const [cancelTarget, setCancelTarget] = useState<{ id: string; refNo: string } | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; refNo: string } | null>(null)
+  // Mulai lebih awal dari jadwal: alasan wajib (pengecualian tercatat).
+  const [startTarget, setStartTarget] = useState<{
+    id: string
+    refNo: string
+    note: string
+    ownerUsername?: string
+  } | null>(null)
   const [busyID, setBusyID] = useState<string | null>(null)
 
   const tagColors = useTagColors()
@@ -230,13 +237,15 @@ export default function Rfs({
     try {
       if (!ownerUsername) {
         await workItemsApi.assign(id, user.username)
-        toast('success', 'RFS mulai dikerjakan', `${refNo} ditetapkan kepada ${user.username}`)
+        toast('success', 'RFS diambil', `${refNo} ditetapkan kepada ${user.username}`)
       } else {
         const result = await workItemsApi.addCollaborator(id, user.username)
-        // Status maju ke in_progress hanya bila jadwal RFS sudah tiba.
+        // Status hanya maju otomatis bila jadwal RFS sudah tiba. Sebelum
+        // jadwal, pengerjaan lebih awal memakai tombol "Mulai Kerjakan"
+        // (wajib alasan).
         const detail = result.status
           ? `${refNo} — status: ${statusLabel(result.status)}`
-          : `${refNo} — menunggu jadwal untuk mulai dikerjakan`
+          : `${refNo} — jadwal belum tiba, tekan "Mulai Kerjakan" (isi alasan) bila ingin lebih awal`
         toast(
           result.inserted ? 'success' : 'info',
           result.inserted ? 'Berhasil mengikuti RFS' : 'Sudah mengikuti RFS',
@@ -277,41 +286,63 @@ export default function Rfs({
   /**
    * startRFS — tombol "Mulai Kerjakan": new → in_progress.
    *
-   * Hanya tersedia setelah jadwal RFS (expire_at) tiba; sebelum itu tombol
-   * nonaktif dan alasannya ditampilkan. Backend juga menolak permintaan yang
-   * terlalu awal sehingga aturan tidak dapat dilewati dari klien.
+   * Jadwal RFS bersifat pengingat, bukan penghalang: bila jadwal belum tiba,
+   * penangan tetap boleh memulai asalkan mengisi alasan (mis. pelanggan minta
+   * aktivasi lebih cepat). Alasan itu wajib dan dicatat backend sebagai
+   * pengecualian (`early_start`).
    *
    * RFS tanpa owner: pengambil alih sekaligus menjadi owner (dan tercatat
    * sebagai penangan), karena status tidak boleh "in progress" tanpa penangan.
    */
-  function startRFS(id: string, refNo: string, gateReason: string, ownerUsername?: string) {
+  function startRFS(
+    id: string,
+    refNo: string,
+    gate: { needsReason: boolean; reason: string },
+    ownerUsername?: string,
+  ) {
+    if (gate.needsReason) {
+      // Wajib alasan: pakai modal (bukan sekadar konfirmasi).
+      setStartTarget({ id, refNo, note: gate.reason, ownerUsername })
+      return
+    }
     const claimFirst = !ownerUsername && !!user?.username
     setConfirm({
       title: 'Mulai kerjakan RFS?',
       body: claimFirst
         ? `${refNo} akan diambil oleh ${user?.username} dan statusnya menjadi "In Progress".`
-        : `${refNo} akan dipindahkan ke status "In Progress". ${gateReason}.`,
+        : `${refNo} akan dipindahkan ke status "In Progress". ${gate.reason}.`,
       confirmLabel: 'Mulai Kerjakan',
       tone: 'primary',
       icon: 'play_arrow',
-      run: async () => {
-        setBusyID(id)
-        try {
-          if (claimFirst && user?.username) {
-            // assign() memajukan status ke in_progress karena jadwal sudah tiba.
-            await workItemsApi.assign(id, user.username)
-          } else {
-            await workItemsApi.rfsStart(id, 'Mulai kerjakan')
-          }
-          toast('success', 'RFS mulai dikerjakan', refNo)
-          items.reload()
-        } catch (err) {
-          toast('error', 'Gagal memulai RFS', err instanceof Error ? err.message : undefined)
-        } finally {
-          setBusyID(null)
-        }
-      },
+      run: () => runStartRFS(id, refNo, '', ownerUsername),
     })
+  }
+
+  /** runStartRFS menjalankan aksi mulai: klaim owner (bila perlu) + rfs-start. */
+  async function runStartRFS(id: string, refNo: string, reason: string, ownerUsername?: string) {
+    setBusyID(id)
+    try {
+      if (!ownerUsername && user?.username) {
+        // Klaim dulu agar status tidak "in progress" tanpa penangan. Klaim
+        // sebelum jadwal hanya mencatat owner; status dimajukan oleh rfs-start.
+        await workItemsApi.assign(id, user.username)
+      }
+      await workItemsApi.rfsStart(
+        id,
+        reason ? 'Mulai dikerjakan lebih awal' : 'Mulai kerjakan',
+        reason,
+      )
+      toast(
+        'success',
+        reason ? 'RFS mulai dikerjakan (lebih awal)' : 'RFS mulai dikerjakan',
+        reason ? `${refNo} — alasan: ${reason}` : refNo,
+      )
+      items.reload()
+    } catch (err) {
+      toast('error', 'Gagal memulai RFS', err instanceof Error ? err.message : undefined)
+    } finally {
+      setBusyID(null)
+    }
   }
 
   function markActivated(id: string, refNo: string) {
@@ -519,7 +550,7 @@ export default function Rfs({
                   const rfs = it.rfs
                   const closed = isClosedItem(it)
                   const busy = busyID === it.id
-                  // Tombol "Mulai Kerjakan" hanya aktif setelah jadwal RFS tiba.
+                  // Mulai Kerjakan selalu aktif; sebelum jadwal wajib alasan.
                   const gate = rfsStartGate(it.status, it.expire_at, it.rfs?.install_stage)
                   const notStarted = it.status === 'new' || it.status === 'planned' || it.status === 'postponed'
                   return (
@@ -601,8 +632,8 @@ export default function Rfs({
                             <button
                               className="btn-primary h-8 px-2 text-label-sm"
                               disabled={!gate.allowed || busy}
-                              onClick={() => startRFS(it.id, it.ref_no, gate.reason, it.owner_username)}
-                              title={gate.allowed ? 'Mulai kerjakan RFS (status menjadi In Progress)' : gate.reason}
+                              onClick={() => startRFS(it.id, it.ref_no, gate, it.owner_username)}
+                              title={gate.reason}
                             >
                               <span className={`material-symbols-outlined text-[16px] ${busy ? 'animate-spin' : ''}`}>
                                 {busy ? 'progress_activity' : 'play_arrow'}
@@ -627,14 +658,14 @@ export default function Rfs({
                             label="Penanganan"
                             items={[
                               { label: 'Lihat detail', icon: 'open_in_new', onClick: () => setDetailID(it.id) },
-                              // Mulai Kerjakan: new → in_progress, hanya setelah jadwal tiba.
+                              // Mulai Kerjakan: new → in_progress (boleh lebih awal dengan alasan).
                               ...(canWrite && !closed && notStarted
                                 ? [{
                                     label: 'Mulai Kerjakan',
                                     icon: 'play_arrow',
                                     disabled: !gate.allowed || busy,
-                                    title: gate.allowed ? 'Mulai kerjakan RFS' : gate.reason,
-                                    onClick: () => startRFS(it.id, it.ref_no, gate.reason, it.owner_username),
+                                    title: gate.reason,
+                                    onClick: () => startRFS(it.id, it.ref_no, gate, it.owner_username),
                                   }]
                                 : []),
                               ...(canWrite && !closed
@@ -729,6 +760,25 @@ export default function Rfs({
             items.reload()
           }}
           onError={(msg) => toast('error', 'Gagal membatalkan RFS', msg)}
+        />
+      )}
+
+      {startTarget && (
+        <ReasonModal
+          title={`Mulai lebih awal — ${startTarget.refNo}`}
+          label={`${startTarget.note}. Isi alasan agar pengerjaan sebelum jadwal tercatat pada riwayat.`}
+          confirmLabel="Mulai Kerjakan"
+          tone="primary"
+          icon="play_arrow"
+          required
+          placeholder="Mis. pelanggan meminta aktivasi lebih cepat…"
+          onClose={() => setStartTarget(null)}
+          onSubmit={async (reason) => {
+            const target = startTarget
+            setStartTarget(null)
+            await runStartRFS(target.id, target.refNo, reason, target.ownerUsername)
+          }}
+          onError={(msg) => toast('error', 'Gagal memulai RFS', msg)}
         />
       )}
 
@@ -924,7 +974,7 @@ function TroubleshootModal({
   )
 }
 
-/** ReasonModal — modal generik untuk Cancel/Hapus dengan alasan. */
+/** ReasonModal — modal generik untuk Cancel/Hapus/Mulai lebih awal. */
 function ReasonModal({
   title,
   label,
@@ -932,6 +982,7 @@ function ReasonModal({
   tone,
   icon,
   required = false,
+  placeholder,
   onClose,
   onSubmit,
   onError,
@@ -942,6 +993,8 @@ function ReasonModal({
   tone: 'primary' | 'danger'
   icon: string
   required?: boolean
+  /** Placeholder textarea (default mengikuti `required`). */
+  placeholder?: string
   onClose: () => void
   onSubmit: (reason: string) => Promise<void>
   onError: (msg: string) => void
@@ -995,7 +1048,7 @@ function ReasonModal({
             autoFocus
             value={reason}
             onChange={(e) => setReason(e.target.value)}
-            placeholder={required ? 'Tulis alasan penghapusan…' : 'Opsional'}
+            placeholder={placeholder ?? (required ? 'Tulis alasan penghapusan…' : 'Opsional')}
           />
         </div>
       </div>
@@ -1131,7 +1184,8 @@ export function RFSForm({
           ...payload,
           item_type: 'rfs',
           // Status awal RFS: `new` (belum dikerjakan). Status maju ke
-          // in_progress hanya lewat tombol "Mulai Kerjakan" setelah jadwal tiba.
+          // in_progress hanya lewat tombol "Mulai Kerjakan" (boleh lebih awal
+          // dari jadwal bila alasannya diisi).
           status: 'new',
         })
       }

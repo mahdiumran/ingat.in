@@ -2,7 +2,7 @@
 
 // Uji integrasi alur status Aktivasi/EWO (RFS):
 //
-//	new → Mulai Kerjakan (setelah jadwal tiba) → in_progress → Close Ticket → activated
+//	new → Mulai Kerjakan → in_progress → Close Ticket → activated
 //
 // Regresi yang dijaga:
 //
@@ -12,8 +12,9 @@
 //
 //  2. Ikut menangani RFS yang masih di status awal tidak memajukan status.
 //
-//  3. Tombol "Mulai Kerjakan" tidak boleh dipakai sebelum jadwal (expire_at)
-//     tiba, baik lewat /rfs-start maupun jalur generik /status.
+//  3. Jadwal (expire_at) BUKAN penghalang: pengerjaan lebih awal diizinkan
+//     asalkan alasan diisi. Tanpa alasan → 400, dengan alasan → 200 dan event
+//     mencatat `early_start`.
 //
 //     export INGATIN_DB_URL='postgres://ingatin:<pw>@127.0.0.1:5432/ingatin_test?sslmode=disable'
 //     go test -tags=integration ./internal/api/... -run TestRFSClose -v
@@ -113,10 +114,13 @@ func TestRFSCloseAndJoinStatus(t *testing.T) {
 			strings.NewReader(`{"reason":"selesai uji"}`))
 		return callHandler(t, r, u, id, s.handleRFSClose)
 	}
-	startRFS := func(u *models.User, id uuid.UUID) int {
+	startRFS := func(u *models.User, id uuid.UUID, body string) int {
 		t.Helper()
+		if body == "" {
+			body = `{"note":"mulai uji"}`
+		}
 		r := httptest.NewRequest(http.MethodPost, "/api/items/"+id.String()+"/rfs-start",
-			strings.NewReader(`{"note":"mulai uji"}`))
+			strings.NewReader(body))
 		return callHandler(t, r, u, id, s.handleRFSStart)
 	}
 	joinRFS := func(u *models.User, id uuid.UUID) int {
@@ -133,20 +137,35 @@ func TestRFSCloseAndJoinStatus(t *testing.T) {
 		}
 		return got.Status
 	}
+	// lastStatusEvent mengambil event perubahan status terbaru (untuk memeriksa
+	// penanda early_start pada pengecualian jadwal).
+	lastStatusEvent := func(id uuid.UUID) *models.WorkItemEvent {
+		t.Helper()
+		events, err := store.ListEvents(ctx, id, 50)
+		if err != nil {
+			t.Fatalf("baca event: %v", err)
+		}
+		for i := range events {
+			if events[i].EventType == "status_changed" {
+				return &events[i]
+			}
+		}
+		return nil
+	}
 
 	past := time.Now().UTC().Add(-2 * time.Hour)
 	future := time.Now().UTC().Add(72 * time.Hour)
 
 	// --- Kasus 1: alur normal new → in_progress → activated. ---
 	open := newRFS(sales.Username, "new", &past)
-	if code := startRFS(noc1, open.ID); code != http.StatusOK {
+	if code := startRFS(noc1, open.ID, ""); code != http.StatusOK {
 		t.Fatalf("mulai kerjakan RFS: got %d, want 200", code)
 	}
 	if got := statusOf(open.ID); got != "in_progress" {
 		t.Fatalf("status setelah Mulai Kerjakan = %q, want in_progress", got)
 	}
 	// Mulai ulang idempoten.
-	if code := startRFS(noc1, open.ID); code != http.StatusOK {
+	if code := startRFS(noc1, open.ID, ""); code != http.StatusOK {
 		t.Fatalf("mulai ulang RFS: got %d, want 200", code)
 	}
 	if code := closeRFS(noc1, open.ID); code != http.StatusOK {
@@ -170,29 +189,61 @@ func TestRFSCloseAndJoinStatus(t *testing.T) {
 		t.Fatalf("tutup ulang RFS: got %d, want 200", code)
 	}
 
-	// --- Kasus 2: jadwal belum tiba → Mulai Kerjakan ditolak. ---
+	// --- Kasus 2: jadwal belum tiba — boleh, tetapi alasan wajib. ---
 	early := newRFS(sales.Username, "new", &future)
-	if code := startRFS(noc1, early.ID); code != http.StatusConflict {
-		t.Fatalf("mulai sebelum jadwal: got %d, want 409", code)
+	// Tanpa alasan → ditolak 400 dengan pesan yang menjelaskan pilihan.
+	if code := startRFS(noc1, early.ID, `{"note":"mulai uji"}`); code != http.StatusBadRequest {
+		t.Fatalf("mulai sebelum jadwal tanpa alasan: got %d, want 400", code)
 	}
 	if got := statusOf(early.ID); got != "new" {
 		t.Fatalf("status setelah mulai ditolak = %q, want tetap new", got)
 	}
-	// Jalur generik /status juga dijaga.
+	// Jalur generik /status juga menuntut alasan (note) sebelum jadwal.
 	r := httptest.NewRequest(http.MethodPost, "/api/items/"+early.ID.String()+"/status",
-		strings.NewReader(`{"status":"in_progress","note":"coba"}`))
-	if code := callHandler(t, r, noc1, early.ID, s.handleChangeStatus); code != http.StatusConflict {
-		t.Fatalf("status generik sebelum jadwal: got %d, want 409", code)
+		strings.NewReader(`{"status":"in_progress"}`))
+	if code := callHandler(t, r, noc1, early.ID, s.handleChangeStatus); code != http.StatusBadRequest {
+		t.Fatalf("status generik sebelum jadwal tanpa alasan: got %d, want 400", code)
 	}
 	if got := statusOf(early.ID); got != "new" {
 		t.Fatalf("status setelah /status ditolak = %q, want tetap new", got)
 	}
-	// Ikut menangani sebelum jadwal hanya mencatat penangan.
+	// Ikut menangani sebelum jadwal hanya mencatat penangan (tanpa alasan).
 	if code := joinRFS(noc2, early.ID); code != http.StatusOK {
 		t.Fatalf("ikut menangani RFS: got %d, want 200", code)
 	}
 	if got := statusOf(early.ID); got != "new" {
 		t.Fatalf("status setelah ikut menangani sebelum jadwal = %q, want tetap new", got)
+	}
+	// Dengan alasan → 200, status maju, dan pengecualian tercatat.
+	if code := startRFS(noc1, early.ID,
+		`{"note":"mulai uji","reason":"pelanggan minta aktivasi lebih cepat"}`); code != http.StatusOK {
+		t.Fatalf("mulai sebelum jadwal dengan alasan: got %d, want 200", code)
+	}
+	if got := statusOf(early.ID); got != "in_progress" {
+		t.Fatalf("status setelah mulai lebih awal = %q, want in_progress", got)
+	}
+	if ev := lastStatusEvent(early.ID); ev == nil {
+		t.Error("event perubahan status tidak ditemukan")
+	} else {
+		if earlyFlag, _ := ev.Detail["early_start"].(bool); !earlyFlag {
+			t.Errorf("event harus menandai early_start, dapat %+v", ev.Detail)
+		}
+		if got, _ := ev.Detail["reason"].(string); !strings.Contains(got, "lebih cepat") {
+			t.Errorf("event harus memuat alasan, dapat %+v", ev.Detail)
+		}
+		if _, ok := ev.Detail["schedule"]; !ok {
+			t.Errorf("event harus memuat jadwal asal, dapat %+v", ev.Detail)
+		}
+	}
+	// Jalur generik /status juga boleh lebih awal asalkan ada catatan alasan.
+	earlyGeneric := newRFS(sales.Username, "new", &future)
+	r2 := httptest.NewRequest(http.MethodPost, "/api/items/"+earlyGeneric.ID.String()+"/status",
+		strings.NewReader(`{"status":"in_progress","note":"pelanggan minta lebih cepat"}`))
+	if code := callHandler(t, r2, noc1, earlyGeneric.ID, s.handleChangeStatus); code != http.StatusOK {
+		t.Fatalf("status generik sebelum jadwal dengan alasan: got %d, want 200", code)
+	}
+	if got := statusOf(earlyGeneric.ID); got != "in_progress" {
+		t.Fatalf("status generik lebih awal = %q, want in_progress", got)
 	}
 
 	// --- Kasus 3: ikut menangani setelah jadwal tiba memajukan status. ---
@@ -214,7 +265,7 @@ func TestRFSCloseAndJoinStatus(t *testing.T) {
 
 	// --- Kasus 4: RFS tanpa jadwal boleh langsung dimulai (tidak diblokir). ---
 	noSchedule := newRFS(sales.Username, "new", nil)
-	if code := startRFS(noc1, noSchedule.ID); code != http.StatusOK {
+	if code := startRFS(noc1, noSchedule.ID, ""); code != http.StatusOK {
 		t.Fatalf("mulai RFS tanpa jadwal: got %d, want 200", code)
 	}
 	if got := statusOf(noSchedule.ID); got != "in_progress" {

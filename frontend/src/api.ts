@@ -721,11 +721,16 @@ export const workItemsApi = {
 
   remove: (id: string) => request<{ ok: boolean }>(`/items/${id}`, { method: 'DELETE' }),
 
-  /** Mulai kerjakan Aktivasi/EWO (new → in_progress), hanya setelah jadwal tiba. */
-  rfsStart: (id: string, note = '') =>
+  /**
+   * Mulai kerjakan Aktivasi/EWO (new → in_progress).
+   *
+   * Bila jadwal RFS belum tiba, `reason` wajib diisi: aktivasi lebih awal
+   * adalah pengecualian yang dicatat backend (`early_start`).
+   */
+  rfsStart: (id: string, note = '', reason = '') =>
     request<WorkItem>(`/items/${id}/rfs-start`, {
       method: 'POST',
-      body: JSON.stringify({ note }),
+      body: JSON.stringify({ note, reason }),
     }),
 
   /** Tutup Aktivasi/EWO: status activated (Closed/Completed) + tahap aktivasi. */
