@@ -11,8 +11,9 @@
 //     ditolak 403 saat mengubah deskripsi/detail RFS dan saat menutup RFS
 //     ("hanya pembuat item atau admin yang dapat mengubah deskripsi/detail").
 //
-//  3. "Team ikut menangani": seluruh anggota tim penekan tombol Ikut/Kerjakan
-//     ikut tercatat sebagai penangan.
+//  3. Penangan tidak boleh "menular": rekan tim yang tidak menekan ikut/
+//     kerjakan tidak boleh terdaftar otomatis (dulu noc4..noc12 ikut tercatat
+//     hanya karena noc3 menekan "Ikut RFS").
 //
 //     export INGATIN_DB_URL='postgres://ingatin:<pw>@127.0.0.1:5432/ingatin_test?sslmode=disable'
 //     go test -tags=integration ./internal/api/... -run TestRFSCollaborator -v
@@ -170,17 +171,20 @@ func TestRFSCollaboratorHandling(t *testing.T) {
 	if !hasCollab(names, joiner.Username) {
 		t.Fatalf("penangan %s tidak muncul pada detail RFS: %v", joiner.Username, names)
 	}
-	// "Team ikut menangani": rekan setim otomatis tercatat.
-	if !hasCollab(names, mate.Username) {
-		t.Fatalf("rekan tim %s tidak otomatis tercatat sebagai penangan: %v", mate.Username, names)
+	// Penangan TIDAK boleh menular otomatis: rekan setim yang tidak menekan
+	// ikut harus tetap di luar daftar (dulu noc4..noc12 ikut terdaftar).
+	if hasCollab(names, mate.Username) {
+		t.Fatalf("rekan tim %s terdaftar otomatis padahal tidak ikut: %v", mate.Username, names)
 	}
-	// Viewer tidak boleh menjadi penangan (tidak dapat menulis).
 	if hasCollab(names, viewer.Username) {
 		t.Fatalf("viewer %s tidak boleh ikut menjadi penangan: %v", viewer.Username, names)
 	}
-	// Anggota tim lain tidak ikut tercatat.
+	// Anggota tim lain juga tidak ikut tercatat.
 	if hasCollab(names, outsider.Username) {
 		t.Fatalf("anggota tim lain %s tidak boleh tercatat: %v", outsider.Username, names)
+	}
+	if len(names) != 1 {
+		t.Fatalf("jumlah penangan setelah 1x ikut = %d (%v), want 1", len(names), names)
 	}
 
 	// Bug 2a: penangan dapat mengubah isi RFS (deskripsi + catatan penanganan).
@@ -191,9 +195,20 @@ func TestRFSCollaboratorHandling(t *testing.T) {
 		`{"rfs":{"issue_found":"kabel longgar","troubleshooting":"cek ODP","action_solution":"rapikan"}}`); code != http.StatusOK {
 		t.Fatalf("penangan menyimpan catatan penanganan RFS: got %d, want 200", code)
 	}
-	// Rekan setim (otomatis penangan) juga boleh mengubah.
+
+	// Penangan kedua (noc3) ikut secara eksplisit → daftar berisi 2 orang saja.
+	if code := join(mate, rfs.ID, mate.Username); code != http.StatusOK {
+		t.Fatalf("NOC kedua ikut RFS: got %d, want 200", code)
+	}
+	names = collaboratorNames(rfs.ID)
+	if !hasCollab(names, joiner.Username) || !hasCollab(names, mate.Username) {
+		t.Fatalf("penangan eksplisit tidak tercatat: %v", names)
+	}
+	if len(names) != 2 {
+		t.Fatalf("jumlah penangan setelah 2x ikut = %d (%v), want 2", len(names), names)
+	}
 	if code := patch(mate, rfs.ID, `{"rfs":{"issue_found":"dicek rekan tim"}}`); code != http.StatusOK {
-		t.Fatalf("rekan setim mengubah catatan RFS: got %d, want 200", code)
+		t.Fatalf("penangan kedua mengubah catatan RFS: got %d, want 200", code)
 	}
 
 	// Bug 2b: penangan dapat menutup RFS (install_stage activated + status).
@@ -231,7 +246,7 @@ func TestRFSCollaboratorHandling(t *testing.T) {
 		t.Fatalf("viewer mengubah RFS: got %d, want 403", code)
 	}
 
-	// --- Kasus 3: RFS tanpa owner → "Kerjakan" mencatat owner + seluruh tim. ---
+	// --- Kasus 3: RFS tanpa owner → "Kerjakan" mencatat owner saja. ---
 	unclaimed := newRFS("")
 	assign := func(u *models.User, id uuid.UUID) int {
 		t.Helper()
@@ -250,11 +265,18 @@ func TestRFSCollaboratorHandling(t *testing.T) {
 		t.Fatalf("owner RFS = %q, want %q", claimed.OwnerUsername, joiner.Username)
 	}
 	names = collaboratorNames(unclaimed.ID)
-	if !hasCollab(names, joiner.Username) || !hasCollab(names, mate.Username) {
-		t.Fatalf("self-claim tidak mencatat penangan + rekan tim: %v", names)
+	if !hasCollab(names, joiner.Username) {
+		t.Fatalf("self-claim tidak mencatat penangan: %v", names)
 	}
-	// Rekan setim hasil ekspansi juga berhak menutup RFS tersebut.
-	if code := changeStatus(mate, unclaimed.ID, "in_progress"); code != http.StatusOK {
-		t.Fatalf("rekan tim mengubah status RFS hasil claim: got %d, want 200", code)
+	// Claim tidak boleh menyeret rekan tim yang tidak ikut.
+	if hasCollab(names, mate.Username) {
+		t.Fatalf("self-claim menyeret rekan tim %s: %v", mate.Username, names)
+	}
+	if len(names) != 1 {
+		t.Fatalf("jumlah penangan setelah claim = %d (%v), want 1", len(names), names)
+	}
+	// Rekan tim yang tidak ikut tetap tidak berhak mengubah RFS tersebut.
+	if code := changeStatus(mate, unclaimed.ID, "in_progress"); code != http.StatusForbidden {
+		t.Fatalf("rekan tim non-penangan mengubah status RFS: got %d, want 403", code)
 	}
 }

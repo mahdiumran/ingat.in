@@ -203,13 +203,6 @@ func (s *Server) handleAssignItem(w http.ResponseWriter, r *http.Request) {
 		s.maybeSendTicketSummary(r.Context(), now)
 	}
 
-	// Keputusan produk ("team ikut menangani"): mengambil item untuk diri
-	// sendiri juga mencatat seluruh anggota tim sebagai penangan tambahan,
-	// sehingga rekan setim dapat memperbarui/menutup item yang sama.
-	if claimsSelf {
-		s.addTeamCollaborators(r, item, actor)
-	}
-
 	updated, err := s.store.GetWorkItem(r.Context(), item.ID)
 	if err != nil {
 		writeInternalError(w, err)
@@ -272,71 +265,17 @@ func (s *Server) handleAddCollaborator(w http.ResponseWriter, r *http.Request) {
 			map[string]any{"ref_no": item.RefNo, "username": target}, true)
 	}
 
-	// Keputusan produk: saat operator IKUT SENDIRI, seluruh anggota timnya
-	// ikut tercatat sebagai penangan ("team ikut menangani"). Admin yang
-	// menambahkan orang lain tidak memicu ekspansi tim.
-	var teamAdded []string
-	if isSelfJoin {
-		teamAdded = s.addTeamCollaborators(r, item, actor)
-	}
-
+	// Penangan tambahan HANYA user yang benar-benar menekan ikut/kerjakan.
+	// Ekspansi otomatis rekan setim dihapus (permintaan produk): daftar
+	// penangan berisi owner + user NOC yang ikut secara eksplisit.
 	list, err := s.store.ListCollaborators(r.Context(), item.ID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
-	if teamAdded == nil {
-		teamAdded = []string{}
-	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok": true, "inserted": inserted, "team_added": teamAdded, "collaborators": list,
+		"ok": true, "inserted": inserted, "collaborators": list,
 	})
-}
-
-// addTeamCollaborators mencatat SELURUH anggota tim user sebagai penangan
-// tambahan item ("team ikut menangani").
-//
-// Dipakai hanya pada jalur self-join ("Ikuti"/"Ikut RFS"/"Kerjakan") agar
-// rekan setim otomatis ikut tercatat dan berhak memperbarui item. Best-effort:
-// kegagalan lookup tim tidak menggagalkan aksi utama. Actor sendiri dilewati
-// karena sudah ditambahkan pemanggil.
-func (s *Server) addTeamCollaborators(r *http.Request, item *models.WorkItem, actor string) []string {
-	u := userFrom(r)
-	if u == nil || item == nil || u.TeamID == nil {
-		return nil
-	}
-	// Hanya tiket & Aktivasi/EWO yang memakai konsep "ikut menangani".
-	if !item.IsTicket() && item.ItemType != models.ItemRFS {
-		return nil
-	}
-	members, err := s.store.ListTeamMemberUsernames(r.Context(), *u.TeamID)
-	if err != nil {
-		return nil
-	}
-	added := make([]string, 0, len(members))
-	for _, name := range members {
-		name = strings.TrimSpace(name)
-		if name == "" || strings.EqualFold(name, actor) {
-			continue
-		}
-		inserted, err := s.store.AddCollaborator(r.Context(), item.ID, name, actor)
-		if err != nil {
-			continue
-		}
-		if inserted {
-			added = append(added, name)
-		}
-	}
-	if len(added) == 0 {
-		return nil
-	}
-	_ = s.store.AppendEventSimple(r.Context(), item.ID, workitems.EventAssigned, map[string]any{
-		"team_id":       u.TeamID.String(),
-		"collaborators": added,
-	})
-	s.audit(r, actor, "item.collaborator_team_add", "work_item", item.ID.String(),
-		map[string]any{"ref_no": item.RefNo, "team_id": u.TeamID.String(), "usernames": added}, true)
-	return added
 }
 
 // handleRemoveCollaborator menghapus penangan tambahan dari sebuah tiket.

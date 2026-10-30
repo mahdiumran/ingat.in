@@ -232,12 +232,11 @@ export default function Rfs({
         toast('success', 'RFS mulai dikerjakan', `${refNo} ditetapkan kepada ${user.username}`)
       } else {
         const result = await workItemsApi.addCollaborator(id, user.username)
-        // "Team ikut menangani": rekan setim otomatis tercatat sebagai penangan.
-        const teamAdded = result.team_added ?? []
-        const detail = teamAdded.length
-          ? `${refNo} — ${teamAdded.length} rekan tim ikut tercatat`
-          : refNo
-        toast(result.inserted ? 'success' : 'info', result.inserted ? 'Berhasil mengikuti RFS' : 'Sudah mengikuti RFS', detail)
+        toast(
+          result.inserted ? 'success' : 'info',
+          result.inserted ? 'Berhasil mengikuti RFS' : 'Sudah mengikuti RFS',
+          refNo,
+        )
       }
       items.reload()
     } catch (err) {
