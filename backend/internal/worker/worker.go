@@ -94,6 +94,12 @@ func (w *Worker) Start() {
 	// F35: reminder Todo Task yang belum selesai. Tick tiap menit; interval
 	// sebenarnya mengikuti setting todo_task.reminder_interval_min (default 60
 	// = tiap jam) sehingga dapat diubah operator tanpa deploy ulang.
+	// F44: ringkasan tiket terbuka (incident/request/change) per interval dari
+	// setting ticket.summary_mode / ticket.summary_interval_min (default 60).
+	// Tick tiap menit; kirim memakai slot waktu agar tidak dobel.
+	if _, err := w.cron.AddFunc("* * * * *", w.runTicketSummaryTick); err != nil {
+		log.Printf("worker: jadwal ringkasan tiket: %v", err)
+	}
 	if _, err := w.cron.AddFunc("* * * * *", w.runTodoReminderTick); err != nil {
 		log.Printf("worker: jadwal reminder todo: %v", err)
 	}
@@ -351,6 +357,134 @@ func (w *Worker) sendDailyTaskSummary(ctx context.Context, now time.Time) (int, 
 	}
 	if res.Added > 0 {
 		log.Printf("worker[daily_summary]: ringkasan %s diantrikan", slotKey)
+	}
+	return res.Added, nil
+}
+
+// runTicketSummaryTick (F44) mengirim ringkasan tiket terbuka sesuai jadwal
+// setting `ticket.summary_mode` (on_change/interval/off; default interval).
+// Mode 'off' menonaktifkan; 'interval' mengirim tiap N menit. Kunci event
+// memakai tanggal+jam-slot agar tidak dobel dalam satu slot.
+func (w *Worker) runTicketSummaryTick() {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	w.withHealth(ctx, "ticket_summary", func() error {
+		mode := "interval"
+		if cfg, err := w.store.GetSetting(ctx, "ticket.summary_mode"); err == nil {
+			if m, ok := cfg["value"].(string); ok && strings.TrimSpace(m) != "" {
+				mode = strings.TrimSpace(strings.ToLower(m))
+			}
+		}
+		if mode != "interval" {
+			// on_change dikirim oleh API saat tiket dibuat/status berubah;
+			// worker periodik hanya menangani mode interval.
+			return nil
+		}
+
+		interval := 60
+		if v, err := w.store.GetSetting(ctx, "ticket.summary_interval_min"); err == nil {
+			switch n := v["value"].(type) {
+			case float64:
+				interval = int(n)
+			case string:
+				if p, e := strconv.Atoi(strings.TrimSpace(n)); e == nil {
+					interval = p
+				}
+			}
+		}
+		if interval < 5 {
+			interval = 5
+		}
+
+		now := time.Now().UTC()
+		// Gunakan epoch-menit, bukan Minute() (0..59): interval 120/1440
+		// tetap benar dan tidak berubah menjadi pengiriman setiap jam.
+		minuteSlot := now.Unix() / 60
+		if minuteSlot%int64(interval) != 0 {
+			return nil
+		}
+
+		if _, err := w.sendTicketSummary(ctx, now, interval); err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
+// sendTicketSummary membangun & mengantre ringkasan tiket terbuka ke target
+// default. Format mengikuti ringkasan tugas harian.
+func (w *Worker) sendTicketSummary(ctx context.Context, now time.Time, interval int) (int, error) {
+	targetID, err := w.store.DefaultTargetID(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("target default tidak ditemukan: %w", err)
+	}
+
+	loc, err := time.LoadLocation(w.cfg.Timezone)
+	if err != nil {
+		loc = time.UTC
+	}
+	local := now.In(loc)
+
+	s, err := w.store.ListOpenTicketSummary(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	symbol := map[string]string{
+		"incident": "\U0001F534",
+		"request":  "\U0001F7E1",
+		"change":   "\U0001F535",
+	}
+	lines := make([]string, 0, s.Total())
+	write := func(title string, items []repository.OpenTicketSummaryItem) {
+		lines = append(lines, fmt.Sprintf("\u2014 %s (%d) \u2014", title, len(items)))
+		for _, it := range items {
+			line := fmt.Sprintf("\u2022 %s %s %s", it.RefNo, it.Title, symbol[it.ItemType])
+			if it.Owner != "" {
+				line += " \u2014 " + it.Owner
+			}
+			if it.Overdue {
+				line += " [TERLAMBAT]"
+			}
+			lines = append(lines, line)
+		}
+		if len(items) == 0 {
+			lines = append(lines, "(tidak ada)")
+		}
+	}
+	// Tiket resolved/fulfilled masih terbuka: menunggu konfirmasi penutupan,
+	// jadi tetap ditampilkan. Change completed sudah terminal dan dikecualikan.
+	write("Tiket baru", s.New)
+	write("Sedang dikerjakan", s.Progress)
+	write("Selesai \u2014 menunggu penutupan", s.Done)
+
+	dayLabel := local.Format("02 Jan 2006 15:04")
+	desc, notes := notify.BuildTicketSummary(
+		dayLabel, len(s.New), len(s.Progress), len(s.Done), lines)
+
+	payload := notify.Payload{
+		Title:       "Ringkasan Tiket Terbuka",
+		CreatedAt:   notify.FormatWIB(&now),
+		Description: desc,
+		Notes:       notes,
+	}
+
+	// Kunci slot memakai epoch agar interval lintas jam/hari tidak bertabrakan.
+	slotKey := strconv.FormatInt((now.Unix()/60)/int64(maxInt(1, interval)), 10)
+	res, err := w.outbox.Enqueue(ctx, notify.EnqueueParams{
+		EventKey:    "ticket_summary:" + slotKey,
+		SourceType:  "system",
+		TemplateKey: notify.TemplateTicketSummary,
+		Severity:    "info",
+		TargetID:    *targetID,
+		Payload:     payload,
+	})
+	if err != nil {
+		return 0, err
+	}
+	if res.Added > 0 {
+		log.Printf("worker[ticket_summary]: ringkasan %s diantrikan (%d tiket)", slotKey, s.Total())
 	}
 	return res.Added, nil
 }

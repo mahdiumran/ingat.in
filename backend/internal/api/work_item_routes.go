@@ -453,6 +453,16 @@ func (s *Server) handleCreateWorkItem(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 
+		// F43: tiket tanpa owner → owner = pembuat. NOC/operator yang membuat
+		// tiket adalah penangan pertamanya; dibatasi tipe tiket (incident/request/
+		// change) agar task/daily_task/reminder tidak ikut ter-own otomatis.
+		if req.Owner == "" &&
+			(req.ItemType == models.ItemIncident ||
+				req.ItemType == models.ItemRequest ||
+				req.ItemType == models.ItemChange) {
+			req.Owner = actor
+		}
+
 		wi, err := s.store.CreateWorkItem(r.Context(), tx, repository.CreateWorkItemParams{
 			RefNo:             ref,
 			ItemType:          req.ItemType,
@@ -529,6 +539,10 @@ func (s *Server) handleCreateWorkItem(w http.ResponseWriter, r *http.Request) {
 	s.audit(r, "", "item.create", "work_item", full.ID.String(), map[string]any{
 		"ref_no": full.RefNo, "item_type": full.ItemType,
 	}, true)
+	// F44: pembuatan tiket memicu ringkasan bila mode=on_change.
+	if full.IsTicket() {
+		s.maybeSendTicketSummary(r.Context(), time.Now().UTC())
+	}
 	writeJSON(w, http.StatusCreated, full)
 }
 
@@ -1126,9 +1140,12 @@ func (s *Server) handleChangeStatus(w http.ResponseWriter, r *http.Request) {
 	// F18: perbarui status pada spreadsheet (best-effort, task saja).
 	s.syncSheet(r, updated, "status_changed")
 
-	// F22: pemicu ringkasan tugas bila mode = on_change (best-effort).
+	// F22/F44: pemicu ringkasan bila mode = on_change (best-effort).
 	if item.ItemType == models.ItemDailyTask && item.Status != req.Status {
 		s.maybeSendDailySummary(r.Context(), now)
+	}
+	if updated.IsTicket() && item.Status != req.Status {
+		s.maybeSendTicketSummary(r.Context(), now)
 	}
 
 	writeJSON(w, http.StatusOK, updated)

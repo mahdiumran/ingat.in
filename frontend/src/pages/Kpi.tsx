@@ -17,7 +17,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import { ApiUser, kpiApi, KPIResult } from '../api'
+import { ApiUser, kpiApi, KPIResult, downloadFile } from '../api'
 import { ErrorState, LoadingBlock, PageHeader } from '../components/ui'
 import { useAsync } from '../hooks'
 import { formatDuration } from '../lib/format'
@@ -141,8 +141,18 @@ export default function Kpi({ user, toast }: { user: ApiUser | null; toast: Toas
     }
   }
 
-  function exportCsv() {
-    window.open(kpiApi.exportCsvUrl(params), '_blank')
+  /** exportCsv mengunduh CSV lewat fetch ber-Bearer; window.open tidak
+   *  mengirim header Authorization sehingga backend menolak 401. */
+  async function exportCsv() {
+    setExporting(true)
+    try {
+      await downloadFile(kpiApi.exportCsvUrl(params))
+      toast('success', 'Export CSV dimulai')
+    } catch (err) {
+      toast('error', 'Gagal mengunduh CSV', err instanceof Error ? err.message : undefined)
+    } finally {
+      setExporting(false)
+    }
   }
 
   // Data grafik.

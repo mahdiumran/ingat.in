@@ -127,11 +127,17 @@ type RequestOptions = RequestInit & { skipAuthRetry?: boolean }
  * downloadFile (F40) — unduh berkas dari endpoint API dengan Authorization,
  * lalu picu simpan ke disk. Bila respons bukan 2xx, pesan error JSON dibaca.
  */
-export async function downloadFile(path: string, filename?: string): Promise<void> {
+export async function downloadFile(path: string, filename?: string, authRetried = false): Promise<void> {
   const headers = new Headers()
   const token = getAccessToken()
   if (token) headers.set('Authorization', `Bearer ${token}`)
   const res = await fetch(`/api${path}`, { headers })
+  // Sama seperti request(): refresh access token sekali lalu ulangi download.
+  if (res.status === 401 && !authRetried && getRefreshToken()) {
+    const newToken = await refreshAccessToken()
+    if (newToken) return downloadFile(path, filename, true)
+    unauthorizedHandler?.()
+  }
   if (!res.ok) {
     let msg = `HTTP ${res.status}`
     try {
@@ -1155,6 +1161,19 @@ export const dailySummaryApi = {
   preview: () => request<{ ok: boolean; added: number }>('/settings/daily-summary/preview', { method: 'POST' }),
 }
 
+/* F44 — Ringkasan tiket terbuka (setting identik daily summary). */
+export type TicketSummarySettings = DailySummarySettings
+
+export const ticketSummaryApi = {
+  get: () => request<TicketSummarySettings>('/settings/ticket-summary'),
+  save: (payload: { mode: string; interval_minutes?: number }) =>
+    request<TicketSummarySettings>('/settings/ticket-summary', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  preview: () => request<{ ok: boolean; added: number }>('/settings/ticket-summary/preview', { method: 'POST' }),
+}
+
 /* ------------------------------------------------------------------------- */
 /* Notifikasi sidebar                                                        */
 /* ------------------------------------------------------------------------- */
@@ -1392,7 +1411,9 @@ export const kpiApi = {
   },
   exportCsvUrl: (params: Record<string, string> = {}) => {
     const qs = new URLSearchParams(params).toString()
-    return `/api/kpi/sla/export.csv${qs ? `?${qs}` : ''}`
+    // Tanpa prefix /api: dipakai dengan downloadFile() yang sudah menambahkan
+    // prefix /api + header Authorization.
+    return `/kpi/sla/export.csv${qs ? `?${qs}` : ''}`
   },
   /** users mengembalikan daftar username untuk filter KPI. */
   users: () => request<{ users: string[]; total: number }>('/kpi/users'),

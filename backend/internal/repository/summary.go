@@ -79,3 +79,69 @@ func (s *Store) ListDailyTaskSummary(ctx context.Context, from, to time.Time) (D
 	}
 	return out, rows.Err()
 }
+
+/* ---------------------------------------------------------------------------
+   F44 — Ringkasan tiket terbuka (incident/request/change yang belum closed).
+   --------------------------------------------------------------------------- */
+
+// OpenTicketSummaryItem adalah satu baris tiket pada ringkasan.
+type OpenTicketSummaryItem struct {
+	RefNo    string
+	Title    string
+	ItemType string
+	Status   string
+	Owner    string
+	Overdue  bool
+}
+
+// OpenTicketSummary mengelompokkan tiket belum selesai per tahap besar.
+type OpenTicketSummary struct {
+	New      []OpenTicketSummaryItem // new / draft
+	Progress []OpenTicketSummaryItem // assigned / in_progress / review / approved / scheduled / implementing / pending_customer
+	Done     []OpenTicketSummaryItem // resolved / fulfilled; belum closed
+}
+
+// SummaryTicketTypes adalah tipe yang dihitung sebagai tiket.
+var SummaryTicketTypes = []string{"incident", "request", "change"}
+
+// ListOpenTicketSummary mengambil seluruh tiket aktif (belum terminal state).
+// Tiket dianggap terlambat bila expire_at sudah lewat.
+func (s *Store) ListOpenTicketSummary(ctx context.Context) (OpenTicketSummary, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT ref_no, title, item_type, status, COALESCE(owner_username, ''),
+		       (expire_at IS NOT NULL AND expire_at < now()) AS overdue
+		FROM work_items
+		WHERE NOT is_deleted
+		  AND item_type IN ('incident','request','change')
+		  AND NOT (
+		    (item_type IN ('incident','request') AND status = 'closed')
+		    OR (item_type = 'change' AND status IN ('completed','rolled_back','cancelled'))
+		  )
+		ORDER BY ref_no`)
+	if err != nil {
+		return OpenTicketSummary{}, err
+	}
+	defer rows.Close()
+
+	out := OpenTicketSummary{}
+	for rows.Next() {
+		var it OpenTicketSummaryItem
+		if err := rows.Scan(&it.RefNo, &it.Title, &it.ItemType, &it.Status, &it.Owner, &it.Overdue); err != nil {
+			return OpenTicketSummary{}, err
+		}
+		switch it.Status {
+		case "resolved", "fulfilled":
+			out.Done = append(out.Done, it)
+		case "new", "draft":
+			out.New = append(out.New, it)
+		default:
+			out.Progress = append(out.Progress, it)
+		}
+	}
+	return out, rows.Err()
+}
+
+// Total mengembalikan jumlah seluruh tiket pada ringkasan.
+func (d OpenTicketSummary) Total() int {
+	return len(d.New) + len(d.Progress) + len(d.Done)
+}

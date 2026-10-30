@@ -180,8 +180,10 @@ func (s *Server) Handler() http.Handler {
 			pr.Get("/notifications", s.handleListNotifications)
 			pr.Post("/notifications/read", s.handleMarkNotificationsRead)
 
-			// F22: konfigurasi ringkasan tugas harian (baca untuk semua; tulis admin).
+			// F22/F44: konfigurasi ringkasan tugas harian dan tiket terbuka
+			// (baca untuk semua; tulis admin).
 			pr.Get("/settings/daily-summary", s.handleGetDailySummarySettings)
+			pr.Get("/settings/ticket-summary", s.handleGetTicketSummarySettings)
 
 			// F12: master data (baca untuk semua; tulis dijaga izin masterdata.write)
 			pr.Get("/master-data", s.handleListMasterData)
@@ -237,9 +239,11 @@ func (s *Server) Handler() http.Handler {
 			ar.Get("/audit", s.handleListAudit)
 			ar.Get("/outbox", s.handleListOutbox)
 
-			// F22: ringkasan tugas harian (tulis + preview uji).
+			// F22/F44: ringkasan tugas harian & tiket terbuka (tulis + preview).
 			ar.Post("/settings/daily-summary", s.handleSetDailySummarySettings)
 			ar.Post("/settings/daily-summary/preview", s.handlePreviewDailySummary)
+			ar.Post("/settings/ticket-summary", s.handleSetTicketSummarySettings)
+			ar.Post("/settings/ticket-summary/preview", s.handlePreviewTicketSummary)
 
 			// F3/F4: konfigurasi notifikasi (admin & noc)
 			ar.Post("/providers", s.handleCreateProvider)

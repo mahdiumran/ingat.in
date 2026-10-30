@@ -236,6 +236,12 @@ func FallbackTemplate(key string) *models.NotificationTemplate {
 			Severity: models.SeverityWarning,
 			BodyTpl:  "🎫 TIKET DARI DAILY TASK {{.RefNo}}\n{{.Title}}\n\nPrioritas: {{.Priority}}\nOwner: {{dash .Owner}}\nDari tugas: {{dash .ParentRef}}\n\nDeskripsi : {{or .Description \"—\"}}",
 		}
+	case TemplateTicketSummary:
+		return &models.NotificationTemplate{
+			Key:      key,
+			Severity: models.SeverityInfo,
+			BodyTpl:  "\U0001F3AB RINGKASAN TIKET TERBUKA \u2014 {{.CreatedAt}}\n\n{{.Description}}\n\n{{.Notes}}",
+		}
 	case TemplateTestMessage:
 		return &models.NotificationTemplate{
 			Key:      key,
@@ -269,6 +275,7 @@ const (
 	TemplateTicketReopened = "TICKET_REOPENED"
 	// F24: notifikasi tiket yang dibuat dari Daily Task.
 	TemplateTicketFromDaily = "TICKET_FROM_DAILY"
+	TemplateTicketSummary   = "TICKET_SUMMARY"
 	// TemplateDailySummary adalah ringkasan harian task pending/in_progress/done.
 	TemplateDailySummary = "DAILY_SUMMARY"
 	// TemplateTodoSummary adalah reminder per jam untuk Todo Task yang belum selesai.

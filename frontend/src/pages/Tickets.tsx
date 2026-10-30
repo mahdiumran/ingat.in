@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ApiUser, masterDataApi, notificationApi, WorkItem, workItemsApi } from '../api'
+import { ApiUser, masterDataApi, notificationApi, TicketSummarySettings, ticketSummaryApi, WorkItem, workItemsApi } from '../api'
 import {
   ActionMenu,
   ConfirmDialog,
@@ -105,6 +105,7 @@ export default function Tickets({
   const [creator, setCreator] = useState('')
   const [offset, setOffset] = useState(0)
   const [showCreate, setShowCreate] = useState(false)
+  const [showSummary, setShowSummary] = useState(false)
   const [editing, setEditing] = useState<WorkItem | null>(null)
   const [detailID, setDetailID] = useState<string | null>(null)
   const [notifyingID, setNotifyingID] = useState<string | null>(null)
@@ -287,6 +288,12 @@ export default function Tickets({
               <span className="material-symbols-outlined text-[18px]">refresh</span>
               Muat ulang
             </button>
+            {isAdmin && (
+              <button className="btn-secondary" onClick={() => setShowSummary(true)}>
+                <span className="material-symbols-outlined text-[18px]">notifications_active</span>
+                Ringkasan Notifikasi
+              </button>
+            )}
             {canWrite && (
               <button className="btn-primary" onClick={() => setShowCreate(true)}>
                 <span className="material-symbols-outlined text-[18px]">add</span>
@@ -575,6 +582,8 @@ export default function Tickets({
           </div>
         )}
       </section>
+
+      {showSummary && <TicketSummaryModal toast={toast} onClose={() => setShowSummary(false)} />}
 
       {showCreate && (
         <TicketForm
@@ -941,5 +950,127 @@ function StatFilterCard({
         <span className={`badge ${tone}`} aria-hidden />
       </div>
     </button>
+  )
+}
+
+/** TicketSummaryModal (F44) — pengaturan ringkasan tiket terbuka. */
+function TicketSummaryModal({ toast, onClose }: { toast: Toast; onClose: () => void }) {
+  const [mode, setMode] = useState<TicketSummarySettings['mode']>('interval')
+  const [interval, setInterval] = useState(60)
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    ticketSummaryApi
+      .get()
+      .then((s) => {
+        setMode(s.mode)
+        setInterval(s.interval_minutes || 60)
+      })
+      .catch(() => toast('error', 'Gagal memuat pengaturan ringkasan tiket'))
+      .finally(() => setLoading(false))
+  }, [toast])
+
+  async function save() {
+    setBusy(true)
+    try {
+      await ticketSummaryApi.save({ mode, interval_minutes: interval })
+      toast('success', 'Pengaturan disimpan', 'Ringkasan tiket terbuka diperbarui.')
+      onClose()
+    } catch (err) {
+      toast('error', 'Gagal menyimpan', err instanceof Error ? err.message : undefined)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function preview() {
+    setBusy(true)
+    try {
+      const res = await ticketSummaryApi.preview()
+      if (res.added > 0) {
+        toast('success', 'Ringkasan dikirim', 'Cek kanal notifikasi (Telegram/WhatsApp).')
+      } else {
+        toast('warning', 'Tidak ada pesan baru', 'Binding aktif mungkin sudah menerima ringkasan ini.')
+      }
+    } catch (err) {
+      toast('error', 'Gagal mengirim ringkasan', err instanceof Error ? err.message : undefined)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const modes: { value: TicketSummarySettings['mode']; label: string; note: string }[] = [
+    { value: 'on_change', label: 'Saat ada perubahan', note: 'Kirim saat tiket dibuat atau statusnya berubah.' },
+    { value: 'interval', label: 'Berkala', note: 'Kirim otomatis setiap N menit.' },
+    { value: 'off', label: 'Nonaktif', note: 'Tidak mengirim ringkasan otomatis.' },
+  ]
+
+  return (
+    <Modal
+      title="Ringkasan Notifikasi Tiket"
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn-secondary" onClick={preview} disabled={busy || loading}>
+            <span className="material-symbols-outlined text-[18px]">send</span>
+            Kirim Pratinjau
+          </button>
+          <button className="btn-primary" onClick={save} disabled={busy || loading}>
+            {busy ? 'Menyimpan…' : 'Simpan'}
+          </button>
+        </>
+      }
+    >
+      {loading ? (
+        <LoadingBlock />
+      ) : (
+        <div className="space-y-3.5">
+          <p className="text-body-sm text-text-secondary">
+            Ringkasan memuat seluruh tiket incident, request, dan change yang belum ditutup,
+            dikelompokkan sebagai tiket baru, sedang dikerjakan, dan menunggu penutupan.
+          </p>
+          <div className="space-y-2">
+            {modes.map((m) => (
+              <label
+                key={m.value}
+                className={`flex cursor-pointer items-start gap-3 rounded-control border p-3 ${
+                  mode === m.value ? 'border-primary bg-primary/5' : 'border-outline-variant'
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="ticket-summary-mode"
+                  value={m.value}
+                  checked={mode === m.value}
+                  onChange={() => setMode(m.value)}
+                  className="mt-0.5"
+                />
+                <span>
+                  <span className="block text-body-sm font-medium">{m.label}</span>
+                  <span className="block text-label-sm text-text-secondary">{m.note}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+          {mode === 'interval' && (
+            <div>
+              <label className="label-field" htmlFor="ticket-summary-interval">
+                Interval (menit)
+              </label>
+              <input
+                id="ticket-summary-interval"
+                type="number"
+                min={5}
+                max={1440}
+                className="input"
+                value={interval}
+                onChange={(e) => setInterval(Number(e.target.value))}
+              />
+            </div>
+          )}
+        </div>
+      )}
+    </Modal>
   )
 }

@@ -140,13 +140,16 @@ func (s *Server) handleEscalateTicket(w http.ResponseWriter, r *http.Request) {
 
 		parentID := item.ID
 		wi, err := s.store.CreateWorkItem(r.Context(), tx, repository.CreateWorkItemParams{
-			RefNo:             ref,
-			ItemType:          ticketType,
-			Title:             title,
-			Description:       desc,
-			Priority:          priority,
-			Status:            workitems.WorkflowFor(ticketType).InitialState,
-			OwnerUsername:     item.OwnerUsername,
+			RefNo:       ref,
+			ItemType:    ticketType,
+			Title:       title,
+			Description: desc,
+			Priority:    priority,
+			Status:      workitems.WorkflowFor(ticketType).InitialState,
+			// F43: owner tiket = pengguna yang mengeskalasi (actor), bukan
+			// owner task. Eskalator adalah NOC yang menemukan masalah dan
+			// menaikkan tiket — penangan pertama adalah dia.
+			OwnerUsername:     actor,
 			RequesterUsername: item.RequesterUsername,
 			TeamID:            item.TeamID,
 			OrganizationID:    orgID,
@@ -218,6 +221,8 @@ func (s *Server) handleEscalateTicket(w http.ResponseWriter, r *http.Request) {
 	s.audit(r, "", "item.escalate_ticket", "work_item", full.ID.String(), map[string]any{
 		"daily_task_ref": item.RefNo, "ticket_ref": full.RefNo, "ticket_type": ticketType,
 	}, true)
+	// F44: tiket baru dari Daily Task ikut memicu ringkasan mode on_change.
+	s.maybeSendTicketSummary(r.Context(), now)
 
 	// Kirim notifikasi khusus "tiket dari daily task" setelah audit (best-effort).
 	s.notifyTicketFromDaily(r, full, item)
