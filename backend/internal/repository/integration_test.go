@@ -688,3 +688,130 @@ func TestUpdatedByAndCompletionNote(t *testing.T) {
 		t.Errorf("completion_note = %q, want 'Selesai, clear'", got.Task.CompletionNote)
 	}
 }
+
+// TestListWorkItemsRFSDetailsAndSearch memverifikasi ListWorkItems memuat
+// rfs_details secara batch (RFS != nil, CustomerName, Bandwidth terisi)
+// dan pencarian Search mencakup kolom rfs_details (customer_name dan service_package).
+func TestListWorkItemsRFSDetailsAndSearch(t *testing.T) {
+	store, ctx := setupStore(t)
+
+	uniqueSuffix := time.Now().Format("150405.000000")
+	custName := "PT Pelanggan Unik " + uniqueSuffix
+	pkgName := "Dedicated-100M-" + uniqueSuffix
+	bandwidth := "100 Mbps"
+
+	var itemID uuid.UUID
+	var refNo string
+
+	if err := store.Tx(ctx, func(tx pgx.Tx) error {
+		ref, err := workitems.NextRefNo(ctx, tx, models.ItemRFS, time.Now())
+		if err != nil {
+			return err
+		}
+		refNo = ref
+		wi, err := store.CreateWorkItem(ctx, tx, repository.CreateWorkItemParams{
+			RefNo:     ref,
+			ItemType:  models.ItemRFS,
+			Title:     "Instalasi Baru " + uniqueSuffix,
+			Priority:  "normal",
+			Status:    "planned",
+			Source:    "test",
+			CreatedBy: "integration-test",
+		})
+		if err != nil {
+			return err
+		}
+		itemID = wi.ID
+
+		return store.CreateRFSDetails(ctx, tx, wi.ID, repository.CreateRFSDetailsParams{
+			CustomerName:   custName,
+			ServiceID:      "SID-" + uniqueSuffix,
+			ServicePackage: pkgName,
+			Bandwidth:      bandwidth,
+			InstallStage:   models.RFSStagePlanned,
+		})
+	}); err != nil {
+		t.Fatalf("seed RFS: %v", err)
+	}
+	t.Cleanup(func() { _, _ = store.SoftDeleteWorkItem(ctx, itemID) })
+
+	// 1) ListWorkItems dengan ItemType: models.ItemRFS harus memuat RFS != nil
+	// beserta CustomerName dan Bandwidth yang sesuai.
+	items, total, err := store.ListWorkItems(ctx, repository.ListWorkItemsParams{
+		ItemType: models.ItemRFS,
+		Limit:    100,
+	})
+	if err != nil {
+		t.Fatalf("ListWorkItems: %v", err)
+	}
+	if total == 0 {
+		t.Fatal("total items 0, ingin minimal 1")
+	}
+
+	var found *models.WorkItem
+	for i := range items {
+		if items[i].ID == itemID {
+			found = &items[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("item %s tidak ditemukan dalam hasil ListWorkItems", refNo)
+	}
+	if found.RFS == nil {
+		t.Fatal("RFS extension nil pada item hasil ListWorkItems")
+	}
+	if found.RFS.CustomerName != custName {
+		t.Errorf("customer_name = %q, want %q", found.RFS.CustomerName, custName)
+	}
+	if found.RFS.Bandwidth != bandwidth {
+		t.Errorf("bandwidth = %q, want %q", found.RFS.Bandwidth, bandwidth)
+	}
+	if found.RFS.ServicePackage != pkgName {
+		t.Errorf("service_package = %q, want %q", found.RFS.ServicePackage, pkgName)
+	}
+	if found.RFS.InstallStage != models.RFSStagePlanned {
+		t.Errorf("install_stage = %q, want %q", found.RFS.InstallStage, models.RFSStagePlanned)
+	}
+
+	// 2) Pencarian Search dengan nama customer harus menemukan item.
+	searchByCust, _, err := store.ListWorkItems(ctx, repository.ListWorkItemsParams{
+		ItemType: models.ItemRFS,
+		Search:   custName,
+	})
+	if err != nil {
+		t.Fatalf("search by customer: %v", err)
+	}
+	custFound := false
+	for _, it := range searchByCust {
+		if it.ID == itemID {
+			custFound = true
+			if it.RFS == nil || it.RFS.CustomerName != custName {
+				t.Errorf("item pencarian tidak memuat rfs_details yang sesuai")
+			}
+			break
+		}
+	}
+	if !custFound {
+		t.Errorf("pencarian dengan Search=%q gagal menemukan item %s", custName, refNo)
+	}
+
+	// 3) Pencarian Search dengan paket layanan harus menemukan item.
+	searchByPkg, _, err := store.ListWorkItems(ctx, repository.ListWorkItemsParams{
+		ItemType: models.ItemRFS,
+		Search:   pkgName,
+	})
+	if err != nil {
+		t.Fatalf("search by package: %v", err)
+	}
+	pkgFound := false
+	for _, it := range searchByPkg {
+		if it.ID == itemID {
+			pkgFound = true
+			break
+		}
+	}
+	if !pkgFound {
+		t.Errorf("pencarian dengan Search=%q gagal menemukan item %s", pkgName, refNo)
+	}
+}

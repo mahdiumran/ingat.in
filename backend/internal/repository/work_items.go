@@ -367,8 +367,17 @@ func (s *Store) ListWorkItems(ctx context.Context, p ListWorkItemsParams) ([]mod
 	}
 	if p.Search != "" {
 		like := "%" + strings.ToLower(p.Search) + "%"
-		where = append(where, "(lower(title) LIKE "+arg(like)+" OR lower(ref_no) LIKE "+arg(like)+
-			" OR lower(customer_ref) LIKE "+arg(like)+" OR lower(device_ref) LIKE "+arg(like)+")")
+		searchClauses := []string{
+			"lower(title) LIKE " + arg(like),
+			"lower(ref_no) LIKE " + arg(like),
+			"lower(customer_ref) LIKE " + arg(like),
+			"lower(device_ref) LIKE " + arg(like),
+		}
+		if p.ItemType == models.ItemRFS {
+			l := arg(like)
+			searchClauses = append(searchClauses, "EXISTS (SELECT 1 FROM rfs_details rd WHERE rd.work_item_id = work_items.id AND (lower(rd.customer_name) LIKE "+l+" OR lower(rd.service_package) LIKE "+l+" OR lower(rd.bandwidth) LIKE "+l+"))")
+		}
+		where = append(where, "("+strings.Join(searchClauses, " OR ")+")")
 	}
 
 	// Filter harian (Daily Task): cocokkan tanggal start_at.
@@ -428,7 +437,58 @@ func (s *Store) ListWorkItems(ctx context.Context, p ListWorkItemsParams) ([]mod
 	if err != nil {
 		return nil, 0, err
 	}
+	if err := s.loadRFSDetailsForItems(ctx, items); err != nil {
+		return nil, 0, err
+	}
 	return items, total, nil
+}
+
+// loadRFSDetailsForItems memuat rfs_details untuk semua item ber-tipe models.ItemRFS
+// dalam satu query batch tanpa N+1 query.
+func (s *Store) loadRFSDetailsForItems(ctx context.Context, items []models.WorkItem) error {
+	var rfsIDs []uuid.UUID
+	for i := range items {
+		if items[i].ItemType == models.ItemRFS {
+			rfsIDs = append(rfsIDs, items[i].ID)
+		}
+	}
+	if len(rfsIDs) == 0 {
+		return nil
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT work_item_id, customer_name, service_id, service_package, bandwidth,
+		       pic_noc, pic_sales, pic_team_id, sales_username, site, install_stage,
+		       category_code, category_label, issue_found, troubleshooting, action_solution
+		FROM rfs_details WHERE work_item_id = ANY($1)`, rfsIDs)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	byID := make(map[uuid.UUID]*models.RFSDetails, len(rfsIDs))
+	for rows.Next() {
+		d := &models.RFSDetails{}
+		if err := rows.Scan(
+			&d.WorkItemID, &d.CustomerName, &d.ServiceID, &d.ServicePackage, &d.Bandwidth,
+			&d.PicNOC, &d.PicSales, &d.PicTeamID, &d.SalesUsername, &d.Site, &d.InstallStage,
+			&d.CategoryCode, &d.CategoryLabel, &d.IssueFound, &d.Troubleshooting, &d.ActionSolution,
+		); err != nil {
+			return err
+		}
+		byID[d.WorkItemID] = d
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for i := range items {
+		if items[i].ItemType == models.ItemRFS {
+			if d, ok := byID[items[i].ID]; ok {
+				items[i].RFS = d
+			}
+		}
+	}
+	return nil
 }
 
 // UpdateWorkItemFields melakukan update parsial pada kolom work item.
