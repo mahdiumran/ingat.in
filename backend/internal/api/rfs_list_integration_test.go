@@ -111,8 +111,15 @@ func TestListRFSIncludesDetails(t *testing.T) {
 	if got == nil {
 		t.Fatalf("RFS %s tidak ada pada daftar", itemID)
 	}
+	// Judul tetap berasal dari work_items.title dan independen dari customer.
+	if wantTitle := "Aktivasi daftar " + suffix; got.Title != wantTitle {
+		t.Errorf("title = %q, want %q", got.Title, wantTitle)
+	}
 	if got.RFS == nil {
 		t.Fatal("rfs_details tidak ikut pada response daftar (rfs nil)")
+	}
+	if got.RFS.CustomerName == got.Title {
+		t.Error("title tidak boleh tertimpa customer_name")
 	}
 	if got.RFS.CustomerName != customer {
 		t.Errorf("customer_name = %q, want %q", got.RFS.CustomerName, customer)
