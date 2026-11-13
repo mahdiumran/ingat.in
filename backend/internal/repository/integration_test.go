@@ -815,3 +815,106 @@ func TestListWorkItemsRFSDetailsAndSearch(t *testing.T) {
 		t.Errorf("pencarian dengan Search=%q gagal menemukan item %s", pkgName, refNo)
 	}
 }
+
+// TestListWorkItemsOpenFirst memverifikasi OpenFirst menempatkan item belum
+// selesai di atas item terminal untuk tipe yang sama, termasuk RFS legacy yang
+// baru terminal pada tahap instalasi (install_stage activated).
+func TestListWorkItemsOpenFirst(t *testing.T) {
+	store, ctx := setupStore(t)
+
+	suffix := time.Now().Format("150405.000000")
+
+	// seed membuat work item + (opsional) rfs_details, mengembalikan ID.
+	seed := func(itemType, status, title, installStage string) uuid.UUID {
+		t.Helper()
+		var id uuid.UUID
+		if err := store.Tx(ctx, func(tx pgx.Tx) error {
+			ref, err := workitems.NextRefNo(ctx, tx, itemType, time.Now())
+			if err != nil {
+				return err
+			}
+			wi, err := store.CreateWorkItem(ctx, tx, repository.CreateWorkItemParams{
+				RefNo: ref, ItemType: itemType, Title: title,
+				Priority: "normal", Status: status, Source: "test",
+				CreatedBy: "integration-test",
+			})
+			if err != nil {
+				return err
+			}
+			id = wi.ID
+			if installStage == "" {
+				return nil
+			}
+			return store.CreateRFSDetails(ctx, tx, wi.ID, repository.CreateRFSDetailsParams{
+				CustomerName: "PT OpenFirst " + suffix,
+				InstallStage: installStage,
+			})
+		}); err != nil {
+			t.Fatalf("seed %s: %v", title, err)
+		}
+		t.Cleanup(func() { _, _ = store.SoftDeleteWorkItem(ctx, id) })
+		return id
+	}
+
+	// indexItem mencari posisi ID dalam hasil list (tanpa memuat detail).
+	indexItem := func(t *testing.T, items []models.WorkItem, id uuid.UUID) int {
+		t.Helper()
+		for i := range items {
+			if items[i].ID == id {
+				return i
+			}
+		}
+		t.Fatalf("item %s tidak ditemukan dalam hasil ListWorkItems", id)
+		return -1
+	}
+
+	wf := workitems.WorkflowFor(models.ItemIncident)
+	if wf == nil {
+		t.Fatal("workflow incident tidak ditemukan")
+	}
+
+	// Tiket: terbuka (status awal) vs terminal (closed). Item terminal sengaja
+	// dibuat belakangan agar tanpa OpenFirst ia tampil lebih dulu (created_at DESC).
+	openTicket := seed(models.ItemIncident, wf.InitialState, "uji open_first buka "+suffix, "")
+	closedTicket := seed(models.ItemIncident, "closed", "uji open_first tutup "+suffix, "")
+
+	items, _, err := store.ListWorkItems(ctx, repository.ListWorkItemsParams{
+		ItemType:   models.ItemIncident,
+		Search:     suffix,
+		OrderBy:    "created_at",
+		Descending: true,
+		OpenFirst:  true,
+		Limit:      100,
+	})
+	if err != nil {
+		t.Fatalf("ListWorkItems tiket: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("hasil tiket = %d baris, ingin 2", len(items))
+	}
+	if indexItem(t, items, openTicket) > indexItem(t, items, closedTicket) {
+		t.Errorf("tiket terbuka (%s) tidak berada di atas tiket closed (%s)",
+			openTicket, closedTicket)
+	}
+
+	// RFS legacy: status non-terminal tetapi install_stage activated harus
+	// diperlakukan terminal, sehingga RFS planned tampil lebih dulu.
+	openRFS := seed(models.ItemRFS, models.RFSStagePlanned, "uji open_first rfs "+suffix, models.RFSStagePlanned)
+	legacyRFS := seed(models.ItemRFS, models.RFSStageProvision, "uji open_first rfs legacy "+suffix, models.RFSStageActivated)
+
+	rfsItems, _, err := store.ListWorkItems(ctx, repository.ListWorkItemsParams{
+		ItemType:   models.ItemRFS,
+		Search:     suffix,
+		OrderBy:    "created_at",
+		Descending: true,
+		OpenFirst:  true,
+		Limit:      100,
+	})
+	if err != nil {
+		t.Fatalf("ListWorkItems rfs: %v", err)
+	}
+	if indexItem(t, rfsItems, openRFS) > indexItem(t, rfsItems, legacyRFS) {
+		t.Errorf("RFS planned (%s) tidak berada di atas RFS install_stage activated (%s)",
+			openRFS, legacyRFS)
+	}
+}

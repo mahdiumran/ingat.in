@@ -288,6 +288,9 @@ type ListWorkItemsParams struct {
 	Offset     int
 	OrderBy    string
 	Descending bool
+	// OpenFirst menempatkan item belum selesai di atas item terminal
+	// (mis. closed/completed/cancelled), tanpa mengubah urutan sekunder.
+	OpenFirst bool
 
 	// F31: pembatasan per tim untuk task & daily_task.
 	// OwnerScopeUsername, bila tidak kosong, membatasi ke item tanpa tim
@@ -319,6 +322,28 @@ func (s *Store) ListOpenTodoTasks(ctx context.Context) ([]models.WorkItem, error
 	}
 	defer rows.Close()
 	return scanWorkItems(rows)
+}
+
+// openFirstOrderExpr mengembalikan ekspresi ORDER BY yang memberi nilai 0 pada
+// item belum selesai dan 1 pada item terminal, sehingga item terminal selalu
+// berada di bawah. Status terminal dibedakan per tipe item; tipe lain (daftar
+// campuran) memakai kumpulan status terminal global. String statis, bukan input
+// pengguna.
+func openFirstOrderExpr(itemType string) string {
+	switch itemType {
+	case models.ItemIncident, models.ItemRequest:
+		return "CASE WHEN status = 'closed' THEN 1 ELSE 0 END"
+	case models.ItemChange:
+		return "CASE WHEN status IN ('completed','rolled_back','cancelled') THEN 1 ELSE 0 END"
+	case models.ItemRFS:
+		// Legacy: tahap instalasi activated/cancelled juga berarti selesai.
+		return "CASE WHEN status IN ('activated','cancelled')" +
+			" OR EXISTS (SELECT 1 FROM rfs_details rd WHERE rd.work_item_id = work_items.id" +
+			" AND rd.install_stage IN ('activated','cancelled')) THEN 1 ELSE 0 END"
+	default:
+		return "CASE WHEN status IN ('closed','canceled','cancelled','completed'," +
+			"'rolled_back','activated','resolved','expired','fulfilled','done') THEN 1 ELSE 0 END"
+	}
 }
 
 // ListWorkItems mengambil daftar work item dengan filter.
@@ -410,6 +435,12 @@ func (s *Store) ListWorkItems(ctx context.Context, p ListWorkItemsParams) ([]mod
 		dir = "DESC"
 	}
 
+	// Susun ORDER BY: pendahulu open_first (bila diminta) + urutan sekunder.
+	orderBy := orderCol + " " + dir
+	if p.OpenFirst {
+		orderBy = openFirstOrderExpr(p.ItemType) + ", " + orderBy
+	}
+
 	var total int
 	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM work_items`+clause, args...).Scan(&total); err != nil {
 		return nil, 0, err
@@ -425,7 +456,7 @@ func (s *Store) ListWorkItems(ctx context.Context, p ListWorkItemsParams) ([]mod
 	}
 
 	query := `SELECT ` + workItemColumns + ` FROM work_items` + clause +
-		fmt.Sprintf(" ORDER BY %s %s LIMIT %s OFFSET %s", orderCol, dir, arg(limit), arg(offset))
+		fmt.Sprintf(" ORDER BY %s LIMIT %s OFFSET %s", orderBy, arg(limit), arg(offset))
 
 	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {

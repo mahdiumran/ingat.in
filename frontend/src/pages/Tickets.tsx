@@ -142,6 +142,7 @@ export default function Tickets({
         ...(priority ? { priority } : {}),
         ...(creator ? { owner: creator } : {}),
         ...(debouncedSearch ? { q: debouncedSearch } : {}),
+        open_first: 'true',
         limit: String(limit),
         offset: String(offset),
       }),

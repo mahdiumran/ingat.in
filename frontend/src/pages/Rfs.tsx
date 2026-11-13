@@ -162,6 +162,7 @@ export default function Rfs({
         ...(debouncedSearch ? { q: debouncedSearch } : {}),
         order: 'expire_at',
         desc: 'false',
+        open_first: 'true',
         limit: String(limit),
         offset: String(offset),
       }),

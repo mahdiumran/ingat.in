@@ -154,7 +154,7 @@ type commentCreateRequest struct {
 
 // handleListWorkItems mengembalikan daftar work item dengan filter.
 //
-// GET /api/items?type=&status=&priority=&owner=&team_id=&q=&limit=&offset=&order=&desc=
+// GET /api/items?type=&status=&status_in=&priority=&sla_state=&owner=&team_id=&target_id=&q=&limit=&offset=&order=&desc=&open_first=
 func (s *Server) handleListWorkItems(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
@@ -213,6 +213,8 @@ func (s *Server) handleListWorkItems(w http.ResponseWriter, r *http.Request) {
 		params.Offset = v
 	}
 	params.Descending = q.Get("desc") != "false"
+	// open_first=true menaruh item belum selesai di atas item terminal.
+	params.OpenFirst = q.Get("open_first") == "true"
 
 	// F31: pembatasan per tim untuk task & daily_task.
 	// Non-admin hanya melihat item timnya (atau miliknya bila tanpa tim).
